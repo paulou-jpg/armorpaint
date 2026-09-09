@@ -6,5 +6,10 @@ if [[ "$OSTYPE" == "linux-gnu"* ]]; then
 		IRON_PLATFORM=linux_x64
 	fi
 elif [[ "$OSTYPE" == "darwin"* ]]; then
-	IRON_PLATFORM=macos
+	MACHINE_TYPE=`uname -m`
+	if [[ "$MACHINE_TYPE" == "x86_64"* ]]; then
+		IRON_PLATFORM=macos_x64
+	else
+		IRON_PLATFORM=macos
+	fi
 fi

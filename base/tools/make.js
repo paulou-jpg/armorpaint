@@ -1660,7 +1660,7 @@ class XCodeExporter extends Exporter {
 		this.p(nativeDebugId + ' /* Debug */ = {', 2);
 		this.p('isa = XCBuildConfiguration;', 3);
 		this.p('buildSettings = {', 3);
-		this.p('ARCHS = arm64;', 4);
+		this.p('ARCHS = "$(NATIVE_ARCH_ACTUAL)";', 4);
 		this.p('ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;', 4);
 		this.p('CODE_SIGN_STYLE = Automatic;', 4);
 		if (target_options.developmentTeam) {
@@ -1738,7 +1738,7 @@ class XCodeExporter extends Exporter {
 		this.p(nativeReleaseId + ' /* Release */ = {', 2);
 		this.p('isa = XCBuildConfiguration;', 3);
 		this.p('buildSettings = {', 3);
-		this.p('ARCHS = arm64;', 4);
+		this.p('ARCHS = "$(NATIVE_ARCH_ACTUAL)";', 4);
 		this.p('ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;', 4);
 		this.p('CODE_SIGN_STYLE = Automatic;', 4);
 		if (target_options.developmentTeam) {
