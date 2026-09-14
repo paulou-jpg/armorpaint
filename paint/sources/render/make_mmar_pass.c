@@ -267,3 +267,27 @@ void mmar_register_material(char *name, void *parse_fn) {
 	plugin_material_custom_nodes_set(stable, parse_fn);
 	mmar_register_node(stable);
 }
+
+// Report what actually ended up in the Add menu, so a blank node can be told
+// apart from a node that was never registered properly.
+void mmar_node_debug(void) {
+	if (nodes_material_categories == NULL || nodes_material_list == NULL) {
+		console_info("mmar-debug: no node categories at all");
+		return;
+	}
+	console_info(string("mmar-debug: %i categories, %i lists", nodes_material_categories->length, nodes_material_list->length));
+	for (i32 i = 0; i < nodes_material_categories->length; ++i) {
+		char *cat = (char *)nodes_material_categories->buffer[i];
+		if (cat == NULL || !string_equals(cat, "mmar")) {
+			continue;
+		}
+		ui_node_t_array_t *list = nodes_material_list->buffer[i];
+		console_info(string("mmar-debug: category %i holds %i node(s)", i, list == NULL ? -1 : list->length));
+		if (list != NULL && list->length > 0) {
+			ui_node_t *n = list->buffer[0];
+			console_info(string("mmar-debug: node name = %s", n->name == NULL ? "(null)" : n->name));
+			console_info(string("mmar-debug: node type = %s", n->type == NULL ? "(null)" : n->type));
+			console_info(string("mmar-debug: outputs = %i", n->outputs == NULL ? -1 : n->outputs->length));
+		}
+	}
+}

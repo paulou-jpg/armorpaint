@@ -280,6 +280,7 @@ gpu_texture_t            *mmar_run_pass(char *id, char *kong_source, char *forma
 void                      mmar_bind_pass_input(gpu_texture_t *tex);
 void                      mmar_register_node(char *name);
 void                      mmar_register_material(char *name, void *parse_fn);
+void                      mmar_node_debug(void);
 void                      mmar_need_tex_coord(void);
 void                      mmar_set_kernel(char *source, char *entry);
 void                      mmar_add_kernel_read(char *id);
