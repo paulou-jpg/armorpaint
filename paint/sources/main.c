@@ -125,6 +125,7 @@
 #include "render/make_mesh.c"
 #include "render/make_mesh_preview.c"
 #include "render/make_node_preview.c"
+#include "render/make_mmar_pass.c"
 #include "render/make_paint.c"
 #include "render/make_particle.c"
 #include "render/make_picking.c"

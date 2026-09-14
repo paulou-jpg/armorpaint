@@ -523,6 +523,10 @@ X2(node_shader_write_frag, "v(p:node_shader_t raw,p:char s)", v, p, p)
 // could previously only append to the fragment body, which is not enough to
 // splice in a cooked kernel -- that needs top-level functions, its own
 // textures, and constants carrying a uniform link.
+// Run one cooked .mmar pass into a texture and hand back the target, so a
+// plugin can evaluate a multi-pass material rather than only a single
+// spliced kernel. Exposure, not implementation: see render/make_mmar_pass.c.
+X3(mmar_run_pass, "p:gpu_texture_t(p:char kong_source,p:char format,i size)", p, p, p, i)
 X2(node_shader_add_function, "v(p:node_shader_t raw,p:char s)", v, p, p)
 X3(node_shader_add_constant, "v(p:node_shader_t raw,p:char s,p:char link)", v, p, p, p)
 X3(node_shader_add_texture, "v(p:node_shader_t raw,p:char name,p:char link)", v, p, p, p)
