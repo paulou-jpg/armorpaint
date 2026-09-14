@@ -519,6 +519,13 @@ X1(context_set_viewport_shader, "v(p viewport_shader)", v, p)
 X1(context_set_viewport_mode, "v(i mode)", v, i)
 X1(context_set_camera_controls, "v(i i)", v, i)
 X2(node_shader_write_frag, "v(p:node_shader_t raw,p:char s)", v, p, p)
+// Exposure, not implementation: these already exist in node_shader.c. A plugin
+// could previously only append to the fragment body, which is not enough to
+// splice in a cooked kernel -- that needs top-level functions, its own
+// textures, and constants carrying a uniform link.
+X2(node_shader_add_function, "v(p:node_shader_t raw,p:char s)", v, p, p)
+X3(node_shader_add_constant, "v(p:node_shader_t raw,p:char s,p:char link)", v, p, p, p)
+X3(node_shader_add_texture, "v(p:node_shader_t raw,p:char name,p:char link)", v, p, p, p)
 X2(plugin_register_texture, "v(p:char format,p fn)", v, p, p)
 X1(plugin_unregister_texture, "v(p:char format)", v, p)
 X2(plugin_register_mesh, "v(p:char format,p fn)", v, p, p)
