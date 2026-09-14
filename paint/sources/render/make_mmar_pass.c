@@ -214,6 +214,13 @@ int mmar_kernel_bytes(void) {
 	return mmar_kernel_source == NULL ? 0 : (int)strlen(mmar_kernel_source);
 }
 
+// How many pass inputs the kernel will declare when spliced. Worth being able
+// to check: registering the kernel clears this list, so reads recorded before
+// that call vanish and the shader then samples textures it never declared.
+int mmar_kernel_read_count(void) {
+	return mmar_kernel_reads == NULL ? 0 : mmar_kernel_reads->length;
+}
+
 void mmar_add_kernel_read(char *id) {
 	if (mmar_kernel_reads == NULL) {
 		mmar_kernel_reads = string_array_create(0);

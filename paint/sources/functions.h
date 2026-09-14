@@ -284,6 +284,7 @@ void                      mmar_set_kernel(char *source, char *entry);
 void                      mmar_add_kernel_read(char *id);
 char                     *mmar_splice_kernel(void);
 int                       mmar_kernel_bytes(void);
+int                       mmar_kernel_read_count(void);
 void                      node_shader_add_constant(node_shader_t *raw, char *s, char *link);
 void                      node_shader_add_texture(node_shader_t *raw, char *name, char *link);
 void                      node_shader_add_function(node_shader_t *raw, char *s);
