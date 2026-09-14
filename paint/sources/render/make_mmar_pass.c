@@ -214,6 +214,46 @@ int mmar_pass_compile_count(void) {
 	return n;
 }
 
+// Milliseconds spent compiling and drawing since last read. Guessing which
+// half of a re-render is slow is how you optimise the wrong one.
+static double mmar_pass_ms_compile = 0.0;
+static double mmar_pass_ms_draw    = 0.0;
+
+int mmar_pass_compile_ms(void) {
+	int n                = (int)mmar_pass_ms_compile;
+	mmar_pass_ms_compile = 0.0;
+	return n;
+}
+
+int mmar_pass_draw_ms(void) {
+	int n             = (int)mmar_pass_ms_draw;
+	mmar_pass_ms_draw = 0.0;
+	return n;
+}
+
+// A stopwatch the plugin can wrap around work that happens on its side, so the
+// archive decode can be told apart from the rendering it precedes.
+static double mmar_mark_at = 0.0;
+
+void mmar_mark(void) {
+	mmar_mark_at = iron_time();
+}
+
+int mmar_elapsed_ms(void) {
+	return (int)((iron_time() - mmar_mark_at) * 1000.0);
+}
+
+// Time spent splicing the kernel into the material shader: baking 16 values
+// through a 49 KB source on every parse is the kind of thing that looks free
+// and is not.
+static double mmar_splice_ms_total = 0.0;
+
+int mmar_splice_ms(void) {
+	int n                = (int)mmar_splice_ms_total;
+	mmar_splice_ms_total = 0.0;
+	return n;
+}
+
 int mmar_pass_reuse_count(void) {
 	int n            = mmar_pass_reused;
 	mmar_pass_reused = 0;
@@ -221,6 +261,7 @@ int mmar_pass_reuse_count(void) {
 }
 
 static void mmar_pass_draw(shader_context_t *con, gpu_texture_t *target, int size) {
+	double t_draw = iron_time();
 	_gpu_begin(target, NULL, NULL, GPU_CLEAR_COLOR, 0, 0.0);
 	gpu_set_pipeline(con->_->pipe);
 	for (int i = 0; i < mmar_pass_input_count; ++i) {
@@ -230,6 +271,7 @@ static void mmar_pass_draw(shader_context_t *con, gpu_texture_t *target, int siz
 	gpu_set_index_buffer(mmar_pass_ib);
 	gpu_draw();
 	gpu_end();
+	mmar_pass_ms_draw += (iron_time() - t_draw) * 1000.0;
 	mmar_pass_input_count = 0;
 	mmar_pass_param_count = 0;
 }
@@ -287,6 +329,7 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 	                                    .color_attachments = any_array_create_from_raw((void *[]){fmt}, 1)});
 	con->_ = ALLOC_INIT(shader_context_runtime_t, {0});
 
+	double t_compile = iron_time();
 	gpu_create_shaders_from_kong(src, &con->vertex_shader, &con->fragment_shader, &con->_->vertex_shader_size,
 	                             &con->_->fragment_shader_size);
 	// On macOS gpu_create_shaders_from_kong returns the Metal source but leaves
@@ -305,6 +348,7 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 	}
 	shader_context_load(con);
 	mmar_pass_compiled++;
+	mmar_pass_ms_compile += (iron_time() - t_compile) * 1000.0;
 
 	// The target outlives the pipeline. Its size and format come from the
 	// archive and do not move when a value does, so re-rendering reuses it --
@@ -522,6 +566,7 @@ char *mmar_splice_kernel(void) {
 	if (mmar_kernel_source == NULL || mmar_kernel_entry == NULL || parser_material_kong == NULL) {
 		return "float3(0.0, 0.0, 0.0)";
 	}
+	double t_splice = iron_time();
 	// A node that samples by UV must ask for the tex vertex element, the way
 	// image_texture_node.c does; without it tex_coord never reaches the vertex
 	// shader and every sample reads the same point.
@@ -550,6 +595,7 @@ char *mmar_splice_kernel(void) {
 		src = mmar_bake_params(src, (char **)mmar_kernel_params->buffer, mmar_kernel_params->length);
 	}
 	node_shader_add_function(parser_material_kong, src);
+	mmar_splice_ms_total += (iron_time() - t_splice) * 1000.0;
 	return string("%s(tex_coord)", mmar_kernel_entry);
 }
 
