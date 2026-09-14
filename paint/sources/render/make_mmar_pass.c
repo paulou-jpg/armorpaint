@@ -108,6 +108,44 @@ static void mmar_pass_create_quad(void) {
 // the runtime kong compiler needs a context the headless script path does not
 // provide, and passes have to be driven from inside the render path rather than
 // at import time. See issue #13.
+// Write parameter values into a shader source as literals.
+//
+// Longest id first. `constants.seed_fbm4` is a prefix of
+// `constants.seed_fbm4_2`, and replacing the short one first leaves `_2`
+// dangling on the end of a number -- which kong reports as a missing bracket
+// three lines later. The cooker orders its own renames the same way.
+//
+// Fixed point, never an exponent: kong tells int from float by the decimal
+// point alone and has no exponent literals. UPSTREAM-QUIRKS.md.
+static char *mmar_bake_params(char *src, char **ids, int count) {
+	if (src == NULL || ids == NULL || count <= 0) {
+		return src;
+	}
+	bool *done = calloc(count, sizeof(bool));
+	for (int k = 0; k < count; ++k) {
+		int best = -1;
+		int best_len = -1;
+		for (int i = 0; i < count; ++i) {
+			if (done[i] || ids[i] == NULL) {
+				continue;
+			}
+			int l = string_length(ids[i]);
+			if (l > best_len) {
+				best     = i;
+				best_len = l;
+			}
+		}
+		if (best < 0) {
+			break;
+		}
+		done[best] = true;
+		src        = string_replace_all(src, string("constants.%s", ids[best]),
+		                                string("%.9f", mmar_param_get(ids[best])));
+	}
+	free(done);
+	return src;
+}
+
 gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size) {
 	if (kong_source == NULL || size <= 0) {
 		console_error("mmar: pass has no source, or a size of zero");
@@ -134,15 +172,15 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 	                                    .color_attachments = any_array_create_from_raw((void *[]){fmt}, 1)});
 	con->_ = ALLOC_INIT(shader_context_runtime_t, {0});
 
-	// Declare the pass's parameters so shader_context_compile resolves a
-	// location for each; the values go in below, after the pipeline is set.
-	con->constants = any_array_create(0);
-	for (int i = 0; i < mmar_pass_param_count; ++i) {
-		any_array_push(con->constants,
-		               ALLOC_INIT(shader_const_t, {.name = mmar_pass_params[i], .type = "float", .link = NULL}));
-	}
+	// Parameter values go into the source, not into a bound constant.
+	//
+	// Declaring them resolved a location for every parameter and the value
+	// written to it never reached the shader -- see UPSTREAM-QUIRKS.md, which
+	// is also why the kernel bakes its own. A pass is compiled from source on
+	// every run, so there is nothing to keep by binding.
+	char *src = mmar_bake_params(kong_source, mmar_pass_params, mmar_pass_param_count);
 
-	gpu_create_shaders_from_kong(kong_source, &con->vertex_shader, &con->fragment_shader, &con->_->vertex_shader_size,
+	gpu_create_shaders_from_kong(src, &con->vertex_shader, &con->fragment_shader, &con->_->vertex_shader_size,
 	                             &con->_->fragment_shader_size);
 	// On macOS gpu_create_shaders_from_kong returns the Metal source but leaves
 	// the sizes alone -- only the SPIR-V branch writes them. gpu_shader_init
@@ -165,14 +203,6 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 
 	_gpu_begin(target, NULL, NULL, GPU_CLEAR_COLOR, 0, 0.0);
 	gpu_set_pipeline(con->_->pipe);
-	// Written directly rather than through a link: this context is ours, the
-	// locations are in declaration order, and there is no object or material
-	// for the usual uniform plumbing to hang off.
-	if (con->_->constants != NULL) {
-		for (i32 i = 0; i < con->_->constants->length && i < mmar_pass_param_count; ++i) {
-			gpu_set_float((i32)(intptr_t)con->_->constants->buffer[i], mmar_param_get(mmar_pass_params[i]));
-		}
-	}
 	for (int i = 0; i < mmar_pass_input_count; ++i) {
 		gpu_set_texture(i, mmar_pass_inputs[i]);
 	}
@@ -395,17 +425,7 @@ char *mmar_splice_kernel(void) {
 	// ui_nodes already does on every knob change. So does this.
 	char *src = mmar_kernel_source;
 	if (mmar_kernel_params != NULL) {
-		for (i32 i = 0; i < mmar_kernel_params->length; ++i) {
-			char *pid = mmar_kernel_params->buffer[i];
-			// Fixed point, always with a decimal point and never an
-			// exponent. kong separates int from float by that point alone, so
-			// a value landing on a whole number would otherwise type as an int;
-			// and it has no exponent literals at all, so %g would emit source
-			// it cannot parse for any small value. UPSTREAM-QUIRKS.md.
-			char *lit  = string("%.9f", mmar_param_get(pid));
-			char *next = string_replace_all(src, string("constants.%s", pid), lit);
-			src        = next;
-		}
+		src = mmar_bake_params(src, (char **)mmar_kernel_params->buffer, mmar_kernel_params->length);
 	}
 	node_shader_add_function(parser_material_kong, src);
 	return string("%s(tex_coord)", mmar_kernel_entry);
