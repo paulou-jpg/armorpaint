@@ -21,6 +21,21 @@
 static gpu_buffer_t *mmar_pass_vb = NULL;
 static gpu_buffer_t *mmar_pass_ib = NULL;
 
+// Inputs for the next pass, in the order the pass declares them. A pass samples
+// the results of earlier ones, so without this every chained pass reads an
+// unbound texture -- which draws without complaint and produces nothing.
+#define MMAR_MAX_INPUTS 16
+static gpu_texture_t *mmar_pass_inputs[MMAR_MAX_INPUTS];
+static int            mmar_pass_input_count = 0;
+
+void mmar_bind_pass_input(gpu_texture_t *tex) {
+	if (mmar_pass_input_count >= MMAR_MAX_INPUTS) {
+		console_error("mmar: too many inputs for one pass");
+		return;
+	}
+	mmar_pass_inputs[mmar_pass_input_count++] = tex;
+}
+
 static void mmar_pass_create_quad(void) {
 	// One oversized triangle rather than two triangles: no shared edge to crack
 	// along, and one less vertex to transform.
@@ -95,10 +110,56 @@ gpu_texture_t *mmar_run_pass(char *kong_source, char *format, int size) {
 
 	_gpu_begin(target, NULL, NULL, GPU_CLEAR_COLOR, 0, 0.0);
 	gpu_set_pipeline(con->_->pipe);
+	for (int i = 0; i < mmar_pass_input_count; ++i) {
+		gpu_set_texture(i, mmar_pass_inputs[i]);
+	}
 	gpu_set_vertex_buffer(mmar_pass_vb);
 	gpu_set_index_buffer(mmar_pass_ib);
 	gpu_draw();
 	gpu_end();
 
+	mmar_pass_input_count = 0;
 	return target;
+}
+
+// Make an imported archive appear in the material node editor's Add menu.
+//
+// plugin_material_custom_nodes_set maps a node type to the function that emits
+// its shader, but nothing puts that type in front of the user: the Add menu is
+// built from nodes_material_list, and a plugin can only contribute to it by
+// registering a category. Without this an imported .mmar is a node type nobody
+// can place.
+//
+// Built here rather than in the plugin because a ui_node_t definition is a
+// nested structure of sockets and defaults, and assembling one through MiniC is
+// considerably more error-prone than calling a function that does it.
+void mmar_register_node(char *name) {
+	ui_node_t *def = ALLOC_INIT(ui_node_t,
+	                            {.id     = 0,
+	                             .name   = name,
+	                             .type   = name, // matches plugin_material_custom_nodes_set
+	                             .x      = 0,
+	                             .y      = 0,
+	                             .color  = 0xff4982a0,
+	                             .inputs = any_array_create_from_raw((void *[]){}, 0),
+	                             .outputs =
+	                                 any_array_create_from_raw((void *[]){
+	                                                               ALLOC_INIT(ui_node_socket_t, {.id            = 0,
+	                                                                                             .node_id       = 0,
+	                                                                                             .name          = "Color",
+	                                                                                             .type          = "RGBA",
+	                                                                                             .color         = 0xffc7c729,
+	                                                                                             .default_value = f32_array_create_xyzw(0.8, 0.8, 0.8, 1.0),
+	                                                                                             .min           = 0.0,
+	                                                                                             .max           = 1.0,
+	                                                                                             .precision     = 100,
+	                                                                                             .display       = 0}),
+	                                                           },
+	                                                           1),
+	                             .buttons = any_array_create_from_raw((void *[]){}, 0),
+	                             .width   = 0,
+	                             .flags   = 0});
+
+	any_array_t *list = any_array_create_from_raw((void *[]){def}, 1);
+	plugin_material_category_add("mmar", list);
 }

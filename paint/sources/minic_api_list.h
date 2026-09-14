@@ -526,6 +526,8 @@ X2(node_shader_write_frag, "v(p:node_shader_t raw,p:char s)", v, p, p)
 // Run one cooked .mmar pass into a texture and hand back the target, so a
 // plugin can evaluate a multi-pass material rather than only a single
 // spliced kernel. Exposure, not implementation: see render/make_mmar_pass.c.
+X1(mmar_register_node, "v(p:char name)", v, p)
+X1(mmar_bind_pass_input, "v(p:gpu_texture_t tex)", v, p)
 X3(mmar_run_pass, "p:gpu_texture_t(p:char kong_source,p:char format,i size)", p, p, p, i)
 X2(node_shader_add_function, "v(p:node_shader_t raw,p:char s)", v, p, p)
 X3(node_shader_add_constant, "v(p:node_shader_t raw,p:char s,p:char link)", v, p, p, p)
