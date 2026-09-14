@@ -537,11 +537,94 @@ static uint8_t jenc_array_type(int count) {
 	return first_type;
 }
 
+static int jenc_hex4(int start) {
+	int v = 0;
+	for (int i = 0; i < 4; i++) {
+		char c = jenc_src[start + i];
+		int  d = (c >= '0' && c <= '9') ? c - '0' : (c >= 'a' && c <= 'f') ? c - 'a' + 10 : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+		if (d < 0) {
+			return -1;
+		}
+		v = v * 16 + d;
+	}
+	return v;
+}
+
+// Byte length of a JSON string span once its escapes are decoded.
+static int jenc_decoded_len(int start, int len) {
+	int n = 0;
+	for (int i = 0; i < len; i++) {
+		if (jenc_src[start + i] != '\\' || i + 1 >= len) {
+			n++;
+			continue;
+		}
+		char e = jenc_src[start + i + 1];
+		if (e == 'u' && i + 5 < len) {
+			int cp = jenc_hex4(start + i + 2);
+			n += cp < 0 ? 6 : (cp < 0x80 ? 1 : cp < 0x800 ? 2 : 3);
+			i += 5;
+		}
+		else {
+			n++;
+			i++;
+		}
+	}
+	return n;
+}
+
+// jsmn hands back the raw span between the quotes, so a "\n" in the source is
+// still two characters here. Copying them verbatim put a literal backslash-n
+// into the decoded string: harmless in a short value, fatal in anything with
+// structure. A shader source came through as a single line and failed to parse
+// at the first escape.
 static void jenc_write_string(int start, int len) {
 	armpack_write_u8(0xdb);
-	armpack_write_u32(len);
+	armpack_write_u32(jenc_decoded_len(start, len));
 	for (int i = 0; i < len; i++) {
-		armpack_write_u8(jenc_src[start + i]);
+		char c = jenc_src[start + i];
+		if (c != '\\' || i + 1 >= len) {
+			armpack_write_u8(c);
+			continue;
+		}
+		char e = jenc_src[start + i + 1];
+		i++;
+		switch (e) {
+		case 'n': armpack_write_u8('\n'); break;
+		case 't': armpack_write_u8('\t'); break;
+		case 'r': armpack_write_u8('\r'); break;
+		case 'b': armpack_write_u8('\b'); break;
+		case 'f': armpack_write_u8('\f'); break;
+		case '"': armpack_write_u8('"'); break;
+		case '/': armpack_write_u8('/'); break;
+		case '\\': armpack_write_u8('\\'); break;
+		case 'u': {
+			int cp = (i + 4 < len) ? jenc_hex4(start + i + 1) : -1;
+			if (cp < 0) {
+				armpack_write_u8('\\');
+				armpack_write_u8('u');
+				break;
+			}
+			i += 4;
+			if (cp < 0x80) {
+				armpack_write_u8((uint8_t)cp);
+			}
+			else if (cp < 0x800) {
+				armpack_write_u8((uint8_t)(0xc0 | (cp >> 6)));
+				armpack_write_u8((uint8_t)(0x80 | (cp & 0x3f)));
+			}
+			else {
+				armpack_write_u8((uint8_t)(0xe0 | (cp >> 12)));
+				armpack_write_u8((uint8_t)(0x80 | ((cp >> 6) & 0x3f)));
+				armpack_write_u8((uint8_t)(0x80 | (cp & 0x3f)));
+			}
+			break;
+		}
+		default:
+			// Not a JSON escape. Keep both characters rather than inventing one.
+			armpack_write_u8('\\');
+			armpack_write_u8(e);
+			break;
+		}
 	}
 }
 

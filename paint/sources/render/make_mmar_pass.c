@@ -74,7 +74,17 @@ gpu_texture_t *mmar_run_pass(char *kong_source, char *format, int size) {
 
 	gpu_create_shaders_from_kong(kong_source, &con->vertex_shader, &con->fragment_shader, &con->_->vertex_shader_size,
 	                             &con->_->fragment_shader_size);
-	if (con->vertex_shader == NULL || con->fragment_shader == NULL) {
+	// On macOS gpu_create_shaders_from_kong returns the Metal source but leaves
+	// the sizes alone -- only the SPIR-V branch writes them. gpu_shader_init
+	// reads the entry name out of the first line of that source, so a length of
+	// zero yields an empty name and a nil vertex function.
+	if (con->vertex_shader != NULL && con->_->vertex_shader_size == 0) {
+		con->_->vertex_shader_size = string_length(con->vertex_shader);
+	}
+	if (con->fragment_shader != NULL && con->_->fragment_shader_size == 0) {
+		con->_->fragment_shader_size = string_length(con->fragment_shader);
+	}
+	if (con->vertex_shader == NULL || con->fragment_shader == NULL || con->_->vertex_shader_size == 0) {
 		console_error("mmar: pass did not compile");
 		return NULL;
 	}
