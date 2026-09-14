@@ -471,6 +471,47 @@ void mmar_register_node(char *name) {
 	mmar_node_param_ids = string_array_create(0);
 }
 
+// Give the node one socket per channel the kernel produces.
+//
+// It shipped with a single Color output, which is all a host could ask for --
+// while mmar_eval computed the normal, the occlusion, the roughness and the
+// rest on its way to albedo and dropped them. The entry point returns a struct
+// now, so a socket is a field read off one evaluation rather than another run
+// of the whole graph.
+static string_array_t *mmar_out_sockets = NULL;
+static string_array_t *mmar_out_fields  = NULL;
+
+void mmar_add_node_output(char *socket, char *field, char *socket_type) {
+	if (mmar_node_def == NULL) {
+		return;
+	}
+	if (mmar_out_sockets == NULL) {
+		mmar_out_sockets = string_array_create(0);
+		mmar_out_fields  = string_array_create(0);
+	}
+	if (mmar_out_sockets->length == 0) {
+		// The placeholder Color socket goes when the real ones arrive.
+		mmar_node_def->outputs->length = 0;
+	}
+	char *name  = string_copy(socket);
+	bool  value = string_equals(socket_type, "VALUE");
+	any_array_push(mmar_node_def->outputs,
+	               ALLOC_INIT(ui_node_socket_t,
+	                          {.id            = 0,
+	                           .node_id       = 0,
+	                           .name          = name,
+	                           .type          = string_copy(socket_type),
+	                           .color         = value ? 0xffa1a1a1 : 0xffc7c729,
+	                           .default_value = value ? f32_array_create_x(0.0)
+	                                                  : f32_array_create_xyzw(0.0, 0.0, 0.0, 1.0),
+	                           .min           = 0.0,
+	                           .max           = 1.0,
+	                           .precision     = 100,
+	                           .display       = 0}));
+	string_array_push(mmar_out_sockets, name);
+	string_array_push(mmar_out_fields, string_copy(field));
+}
+
 // Give the node one knob per exposed control.
 //
 // Without this the node carries a single Color output and nothing else, which
@@ -587,7 +628,7 @@ void mmar_add_kernel_read(char *id) {
 
 // Splice the kernel into the shader being assembled and return the expression
 // for the node's socket. Done in one call so the plugin holds no state at all.
-char *mmar_splice_kernel(void) {
+char *mmar_splice_kernel(char *socket) {
 	if (mmar_kernel_source == NULL || mmar_kernel_entry == NULL || parser_material_kong == NULL) {
 		return "float3(0.0, 0.0, 0.0)";
 	}
@@ -621,7 +662,21 @@ char *mmar_splice_kernel(void) {
 	}
 	node_shader_add_function(parser_material_kong, src);
 	mmar_splice_ms_total += (iron_time() - t_splice) * 1000.0;
-	return string("%s(tex_coord)", mmar_kernel_entry);
+
+	// Which field this socket reads. An archive cooked before the entry point
+	// returned a struct has no outputs, and its kernel still returns albedo
+	// directly -- so the bare call is the right expression for it.
+	if (mmar_out_sockets == NULL || mmar_out_sockets->length == 0) {
+		return string("%s(tex_coord)", mmar_kernel_entry);
+	}
+	char *field = mmar_out_fields->buffer[0];
+	for (i32 i = 0; i < mmar_out_sockets->length; ++i) {
+		if (socket != NULL && string_equals(mmar_out_sockets->buffer[i], socket)) {
+			field = mmar_out_fields->buffer[i];
+			break;
+		}
+	}
+	return string("%s(tex_coord).%s", mmar_kernel_entry, field);
 }
 
 // Register an imported archive as a material node, in one call.
@@ -656,6 +711,12 @@ void mmar_node_debug(void) {
 			console_info(string("mmar-debug: node name = %s", n->name == NULL ? "(null)" : n->name));
 			console_info(string("mmar-debug: node type = %s", n->type == NULL ? "(null)" : n->type));
 			console_info(string("mmar-debug: outputs = %i", n->outputs == NULL ? -1 : n->outputs->length));
+			if (n->outputs != NULL) {
+				for (i32 s = 0; s < n->outputs->length; ++s) {
+					ui_node_socket_t *sock = n->outputs->buffer[s];
+					console_info(string("mmar-debug:   socket %s : %s", sock->name, sock->type));
+				}
+			}
 			console_info(string("mmar-debug: inputs = %i", n->inputs == NULL ? -1 : n->inputs->length));
 			if (n->inputs != NULL) {
 				for (i32 s = 0; s < n->inputs->length; ++s) {
