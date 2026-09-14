@@ -279,6 +279,7 @@ void                      node_shader_add_out(node_shader_t *raw, char *s);
 gpu_texture_t            *mmar_run_pass(char *id, char *kong_source, char *format, int size);
 void                      mmar_bind_pass_input(gpu_texture_t *tex);
 void                      mmar_register_node(char *name);
+void                      mmar_register_material(char *name, void *parse_fn);
 void                      mmar_need_tex_coord(void);
 void                      mmar_set_kernel(char *source, char *entry);
 void                      mmar_add_kernel_read(char *id);

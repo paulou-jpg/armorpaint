@@ -147,6 +147,11 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 // nested structure of sockets and defaults, and assembling one through MiniC is
 // considerably more error-prone than calling a function that does it.
 void mmar_register_node(char *name) {
+	// Copy: name is a MiniC value and does not survive the call that passed it.
+	// It is stored in the node definition and used as the node type forever
+	// after, so a borrowed pointer leaves a node with no name and no type --
+	// which draws as an empty box and never matches in parser_material.
+	name = string_copy(name);
 	ui_node_t *def = ALLOC_INIT(ui_node_t,
 	                            {.id     = 0,
 	                             .name   = name,
@@ -249,4 +254,16 @@ char *mmar_splice_kernel(void) {
 	}
 	node_shader_add_function(parser_material_kong, mmar_kernel_source);
 	return string("%s(tex_coord)", mmar_kernel_entry);
+}
+
+// Register an imported archive as a material node, in one call.
+//
+// Both halves store the name: plugin_material_custom_nodes_set keys the parse
+// callback on it, and the node definition carries it as its type. Both were
+// being handed a MiniC pointer that is invalid the moment the importing call
+// returns.
+void mmar_register_material(char *name, void *parse_fn) {
+	char *stable = string_copy(name);
+	plugin_material_custom_nodes_set(stable, parse_fn);
+	mmar_register_node(stable);
 }
