@@ -291,3 +291,25 @@ void mmar_node_debug(void) {
 		}
 	}
 }
+
+// Write a rendered pass to a PNG so its contents can actually be looked at.
+//
+// A pass that renders and a pass that renders nothing useful are
+// indistinguishable from the outside: both report success and both leave the
+// final material a flat colour. This is the only way to tell them apart
+// without a GUI.
+void mmar_dump_pass(char *id, char *path, int size) {
+	if (mmar_pass_targets == NULL) {
+		console_error("mmar: no pass targets to dump");
+		return;
+	}
+	gpu_texture_t *t = any_map_get(mmar_pass_targets, id);
+	if (t == NULL) {
+		console_error(string("mmar: no target named %s", id));
+		return;
+	}
+	buffer_t *b = buffer_create(size * size * 4);
+	gpu_get_render_target_pixels(t, (uint8_t *)b->buffer);
+	iron_write_png(path, b, size, size, 0);
+	console_info(string("mmar: wrote %s", path));
+}
