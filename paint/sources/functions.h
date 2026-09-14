@@ -291,6 +291,7 @@ void                      mmar_add_kernel_param(char *id);
 void                      mmar_add_pass_param(char *id);
 void                      mmar_param_set(char *id, float value);
 int                       mmar_params_changed(void);
+int                       mmar_pass_size_for(char *size_param, int fallback);
 int                       mmar_pass_compile_count(void);
 int                       mmar_pass_compile_ms(void);
 void                      mmar_mark(void);

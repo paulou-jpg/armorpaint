@@ -67,6 +67,31 @@ void mmar_param_set(char *id, float value) {
 	}
 }
 
+// The resolution a pass should render at, given the control that sizes it.
+//
+// A render target is allocated from this, so it is clamped to something a GPU
+// will take and rounded to a power of two -- a knob drag passes through 1537
+// on its way from 1024 to 2048, and nothing downstream wants a target that
+// shape. Sizes are what a control drives here; the value is not written into
+// the shader, the pass is re-rendered at it.
+int mmar_pass_size_for(char *size_param, int fallback) {
+	if (size_param == NULL) {
+		return fallback;
+	}
+	float v = mmar_param_get(size_param);
+	if (v < 16.0f) {
+		v = 16.0f;
+	}
+	if (v > 4096.0f) {
+		v = 4096.0f;
+	}
+	int size = 16;
+	while (size < 4096 && (float)(size * 2) <= v * 1.5f) {
+		size *= 2;
+	}
+	return size;
+}
+
 // Has any value moved since the passes were last rendered?
 int mmar_params_changed(void) {
 	return mmar_param_epoch != mmar_param_epoch_rendered ? 1 : 0;
