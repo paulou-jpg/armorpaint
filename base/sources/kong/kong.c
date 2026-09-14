@@ -6225,11 +6225,30 @@ void gpu_create_shaders_from_kong(char *kong, char **vs, char **fs, int *vs_size
 
 #elif defined(__APPLE__)
 
-	static char vs_temp[1024 * 128];
-	strcpy(vs_temp, "//>kong_vert\n");
-	char *metal = metal_export("");
+	// Grown to fit rather than a fixed 128 KB: a material node that splices in
+	// a cooked shader produces Metal source well past that, and strcat into a
+	// fixed buffer does not fail gracefully -- __strcat_chk aborts the process
+	// with SIGILL. Held static and reused so repeated compiles do not leak.
+	static char  *vs_temp      = NULL;
+	static size_t vs_temp_size = 0;
+	char         *header       = "//>kong_vert\n";
+	char         *metal        = metal_export("");
+	size_t        need         = strlen(header) + strlen(metal) + 1;
+	if (need > vs_temp_size) {
+		char *grown = realloc(vs_temp, need);
+		if (grown == NULL) {
+			console_info("Warning: out of memory assembling a shader");
+			free(metal);
+			*vs = "";
+			*fs = "";
+			return;
+		}
+		vs_temp      = grown;
+		vs_temp_size = need;
+	}
+	strcpy(vs_temp, header);
 	strcat(vs_temp, metal);
-	*vs = &vs_temp[0];
+	*vs = vs_temp;
 	*fs = "//>kong_frag\n";
 	free(metal);
 
