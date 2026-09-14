@@ -127,6 +127,8 @@ typedef enum spirv_glsl_std {
 	SPIRV_GLSL_STD_TANH    = 21,
 	SPIRV_GLSL_STD_EXP     = 27,
 	SPIRV_GLSL_STD_LOG     = 28,
+	SPIRV_GLSL_STD_EXP2    = 29,
+	SPIRV_GLSL_STD_LOG2    = 30,
 	////
 	SPIRV_GLSL_STD_ASIN         = 16,
 	SPIRV_GLSL_STD_ACOS         = 17,
@@ -2382,6 +2384,16 @@ static void write_function(instructions_buffer *instructions, function *f, spirv
 			else if (func == add_name("exp")) {
 				spirv_id operand = get_var(instructions, o->op_call.parameters[0]);
 				spirv_id id      = write_op_ext_inst(instructions, spirv_float_type, glsl_import, SPIRV_GLSL_STD_EXP, operand);
+				hmput(index_map, o->op_call.var.index, id);
+			}
+			else if (func == add_name("log2")) {
+				spirv_id operand = get_var(instructions, o->op_call.parameters[0]);
+				spirv_id id      = write_op_ext_inst(instructions, spirv_float_type, glsl_import, SPIRV_GLSL_STD_LOG2, operand);
+				hmput(index_map, o->op_call.var.index, id);
+			}
+			else if (func == add_name("exp2")) {
+				spirv_id operand = get_var(instructions, o->op_call.parameters[0]);
+				spirv_id id      = write_op_ext_inst(instructions, spirv_float_type, glsl_import, SPIRV_GLSL_STD_EXP2, operand);
 				hmput(index_map, o->op_call.var.index, id);
 			}
 			else if (func == add_name("sign")) {

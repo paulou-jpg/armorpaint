@@ -2577,6 +2577,8 @@ void functions_init(void) {
 	add_func_float_float("tan");
 	add_func_float_float("log");
 	add_func_float_float("exp");
+	add_func_float_float("log2");
+	add_func_float_float("exp2");
 	add_func_float_float("sign");
 	add_func_float_float("trunc");
 	add_func_float_float("sinh");
