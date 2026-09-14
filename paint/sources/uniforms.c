@@ -12,6 +12,11 @@ i32 uniforms_ext_i32_link(object_t *object, shader_data_t *mat, char *link) {
 }
 
 f32 uniforms_ext_f32_link(object_t *object, shader_data_t *mat, char *link) {
+	// A cooked .mmar kernel reaches its exposed parameters through here.
+	if (starts_with(link, "_mmar_p_")) {
+		return mmar_param_value(link + 8);
+	}
+
 	if (string_equals(link, "_brush_radius")) {
 		bool decal                   = context_is_decal();
 		bool decal_mask              = context_is_decal_mask_paint_pass();

@@ -28,6 +28,49 @@ static gpu_buffer_t *mmar_pass_ib = NULL;
 // by name, and uniforms_ext_tex_link resolves "_mmar_<id>" through here.
 any_map_t *mmar_pass_targets = NULL;
 
+// Exposed parameter values, by stable id. One store serves both halves: the
+// kernel reaches them as host constants through "_mmar_p_<id>" links, and a
+// pass -- compiled standalone with its own parameter block -- has them written
+// straight into its constant locations before it draws.
+any_map_t *mmar_params = NULL;
+
+static float mmar_param_get(char *id) {
+	if (mmar_params == NULL) {
+		return 0.0f;
+	}
+	float *v = any_map_get(mmar_params, id);
+	return v == NULL ? 0.0f : *v;
+}
+
+void mmar_param_set(char *id, float value) {
+	if (mmar_params == NULL) {
+		mmar_params = any_map_create();
+	}
+	float *v = any_map_get(mmar_params, id);
+	if (v == NULL) {
+		v = malloc(sizeof(float));
+		any_map_set(mmar_params, string_copy(id), v);
+	}
+	*v = value;
+}
+
+float mmar_param_value(char *id) {
+	return mmar_param_get(id);
+}
+
+// Parameters the next pass declares, in the order its block declares them.
+#define MMAR_MAX_PASS_PARAMS 32
+static char *mmar_pass_params[MMAR_MAX_PASS_PARAMS];
+static int   mmar_pass_param_count = 0;
+
+void mmar_add_pass_param(char *id) {
+	if (mmar_pass_param_count >= MMAR_MAX_PASS_PARAMS) {
+		console_error("mmar: too many parameters for one pass");
+		return;
+	}
+	mmar_pass_params[mmar_pass_param_count++] = string_copy(id);
+}
+
 #define MMAR_MAX_INPUTS 16
 static gpu_texture_t *mmar_pass_inputs[MMAR_MAX_INPUTS];
 static int            mmar_pass_input_count = 0;
@@ -91,6 +134,14 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 	                                    .color_attachments = any_array_create_from_raw((void *[]){fmt}, 1)});
 	con->_ = ALLOC_INIT(shader_context_runtime_t, {0});
 
+	// Declare the pass's parameters so shader_context_compile resolves a
+	// location for each; the values go in below, after the pipeline is set.
+	con->constants = any_array_create(0);
+	for (int i = 0; i < mmar_pass_param_count; ++i) {
+		any_array_push(con->constants,
+		               ALLOC_INIT(shader_const_t, {.name = mmar_pass_params[i], .type = "float", .link = NULL}));
+	}
+
 	gpu_create_shaders_from_kong(kong_source, &con->vertex_shader, &con->fragment_shader, &con->_->vertex_shader_size,
 	                             &con->_->fragment_shader_size);
 	// On macOS gpu_create_shaders_from_kong returns the Metal source but leaves
@@ -114,6 +165,14 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 
 	_gpu_begin(target, NULL, NULL, GPU_CLEAR_COLOR, 0, 0.0);
 	gpu_set_pipeline(con->_->pipe);
+	// Written directly rather than through a link: this context is ours, the
+	// locations are in declaration order, and there is no object or material
+	// for the usual uniform plumbing to hang off.
+	if (con->_->constants != NULL) {
+		for (i32 i = 0; i < con->_->constants->length && i < mmar_pass_param_count; ++i) {
+			gpu_set_float((i32)(intptr_t)con->_->constants->buffer[i], mmar_param_get(mmar_pass_params[i]));
+		}
+	}
 	for (int i = 0; i < mmar_pass_input_count; ++i) {
 		gpu_set_texture(i, mmar_pass_inputs[i]);
 	}
@@ -123,6 +182,7 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 	gpu_end();
 
 	mmar_pass_input_count = 0;
+	mmar_pass_param_count = 0;
 	if (id != NULL) {
 		if (mmar_pass_targets == NULL) {
 			mmar_pass_targets = any_map_create();
@@ -205,11 +265,20 @@ void mmar_need_tex_coord(void) {
 static char           *mmar_kernel_source = NULL;
 static char           *mmar_kernel_entry  = NULL;
 static string_array_t *mmar_kernel_reads  = NULL;
+static string_array_t *mmar_kernel_params = NULL;
 
 void mmar_set_kernel(char *source, char *entry) {
 	mmar_kernel_source = string_copy(source);
 	mmar_kernel_entry  = string_copy(entry);
 	mmar_kernel_reads  = string_array_create(0);
+	mmar_kernel_params = string_array_create(0);
+}
+
+void mmar_add_kernel_param(char *id) {
+	if (mmar_kernel_params == NULL) {
+		mmar_kernel_params = string_array_create(0);
+	}
+	string_array_push(mmar_kernel_params, string_copy(id));
 }
 
 // How much kernel is currently held. Exists because the plugin-side store
@@ -250,6 +319,15 @@ char *mmar_splice_kernel(void) {
 		for (i32 i = 0; i < mmar_kernel_reads->length; ++i) {
 			char *rid = mmar_kernel_reads->buffer[i];
 			node_shader_add_texture(parser_material_kong, rid, string("_mmar_%s", rid));
+		}
+	}
+	// The kernel reaches its parameters through ArmorPaint's own constants
+	// block, so each one is declared as a host constant with a link that
+	// uniforms_ext_f32_link resolves back to the store above.
+	if (mmar_kernel_params != NULL) {
+		for (i32 i = 0; i < mmar_kernel_params->length; ++i) {
+			char *pid = mmar_kernel_params->buffer[i];
+			node_shader_add_constant(parser_material_kong, string("%s: float", pid), string("_mmar_p_%s", pid));
 		}
 	}
 	node_shader_add_function(parser_material_kong, mmar_kernel_source);
