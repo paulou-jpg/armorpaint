@@ -28,17 +28,72 @@ static gpu_buffer_t *mmar_pass_ib = NULL;
 // by name, and uniforms_ext_tex_link resolves "_mmar_<id>" through here.
 any_map_t *mmar_pass_targets = NULL;
 
+// Everything an imported archive owns.
+//
+// All of this used to be one set of globals, which worked for exactly one
+// archive. Importing a second overwrote the first's kernel, appended its
+// sockets to the same list and left its node pointing at the wrong material --
+// so two imported materials both rendered whichever was imported last.
+// parser_material hands the custom-node callback the node instance, and a
+// node's type is the name it was registered under, so the right record is
+// always reachable from the thing being parsed.
+typedef struct mmar_material {
+	char           *name;
+	char           *archive;
+	ui_node_t      *def;
+	char           *kernel_source;
+	char           *kernel_entry;
+	string_array_t *kernel_reads;
+	string_array_t *kernel_params;
+	string_array_t *out_sockets;
+	string_array_t *out_fields;
+	string_array_t *node_param_ids;
+	bool            passes_dirty;
+} mmar_material_t;
+
+static any_map_t       *mmar_materials = NULL; // name -> mmar_material_t *
+static mmar_material_t *mmar_importing = NULL; // the one being imported
+static mmar_material_t *mmar_rendering = NULL; // the one whose passes are running
+
+static mmar_material_t *mmar_material_get(char *name) {
+	if (name == NULL) {
+		return NULL;
+	}
+	if (mmar_materials == NULL) {
+		mmar_materials = any_map_create();
+	}
+	mmar_material_t *m = any_map_get(mmar_materials, name);
+	if (m == NULL) {
+		m       = ALLOC_INIT(mmar_material_t, {0});
+		m->name = string_copy(name);
+		any_map_set(mmar_materials, m->name, m);
+	}
+	return m;
+}
+
+// The material a node belongs to. A node's type is its registered name.
+static mmar_material_t *mmar_material_for(void *node) {
+	ui_node_t *n = (ui_node_t *)node;
+	if (n == NULL || n->type == NULL || mmar_materials == NULL) {
+		return mmar_importing;
+	}
+	mmar_material_t *m = any_map_get(mmar_materials, n->type);
+	return m != NULL ? m : mmar_importing;
+}
+
 // Exposed parameter values, by stable id. One store serves both halves: the
 // kernel reaches them as host constants through "_mmar_p_<id>" links, and a
 // pass -- compiled standalone with its own parameter block -- has them written
 // straight into its constant locations before it draws.
 any_map_t *mmar_params = NULL;
 
-static float mmar_param_get(char *id) {
+static char *mmar_param_key(mmar_material_t *m, char *id);
+
+static float mmar_param_get_m(mmar_material_t *m, char *id) {
 	if (mmar_params == NULL) {
 		return 0.0f;
 	}
-	float *v = any_map_get(mmar_params, id);
+	float *v = any_map_get(mmar_params, mmar_param_key(m, id));
 	return v == NULL ? 0.0f : *v;
 }
 
@@ -49,7 +104,25 @@ static float mmar_param_get(char *id) {
 static uint32_t mmar_param_epoch          = 0;
 static uint32_t mmar_param_epoch_rendered = 0;
 
+// Scoped to the material. Two archives can both expose "hue".
+static char *mmar_param_key(mmar_material_t *m, char *id) {
+	return string("%s|%s", m == NULL || m->name == NULL ? "" : m->name, id);
+}
+
+static void mmar_param_set_m(mmar_material_t *m, char *id, float value);
+
+// Import-time entry point: the plugin seeds defaults while an archive is being
+// read, which is the one moment the material is unambiguous.
 void mmar_param_set(char *id, float value) {
+	mmar_param_set_m(mmar_importing, id, value);
+}
+
+float mmar_param_value(char *id) {
+	return mmar_param_get_m(mmar_importing, id);
+}
+
+static void mmar_param_set_m(mmar_material_t *m, char *id, float value) {
+	id = mmar_param_key(m, id);
 	if (mmar_params == NULL) {
 		mmar_params = any_map_create();
 	}
@@ -78,7 +151,7 @@ int mmar_pass_size_for(char *size_param, int fallback) {
 	if (size_param == NULL) {
 		return fallback;
 	}
-	float v = mmar_param_get(size_param);
+	float v = mmar_param_get_m(mmar_rendering, size_param);
 	if (v < 16.0f) {
 		v = 16.0f;
 	}
@@ -107,18 +180,30 @@ void mmar_params_rendered(void) {
 // not survive the call that made it. The path is small and the archive is
 // re-decoded from it each time -- the same trade e8b4143 made for the first
 // render, now that there is more than one.
-static char *mmar_archive = NULL;
-
 void mmar_set_archive(char *path) {
-	mmar_archive = string_copy(path);
+	if (mmar_importing != NULL) {
+		mmar_importing->archive       = string_copy(path);
+		mmar_importing->passes_dirty  = true;
+	}
 }
 
+// The archive whose passes need rendering, and the material they belong to.
+// Several can be waiting at once -- two imported materials whose controls both
+// moved -- so this hands back one per call and clears it.
 char *mmar_archive_path(void) {
-	return mmar_archive;
-}
-
-float mmar_param_value(char *id) {
-	return mmar_param_get(id);
+	if (mmar_materials == NULL) {
+		return NULL;
+	}
+	any_array_t *keys = map_keys(mmar_materials);
+	for (i32 i = 0; i < keys->length; ++i) {
+		mmar_material_t *m = any_map_get(mmar_materials, keys->buffer[i]);
+		if (m != NULL && m->passes_dirty && m->archive != NULL) {
+			m->passes_dirty = false;
+			mmar_rendering  = m;
+			return m->archive;
+		}
+	}
+	return NULL;
 }
 
 // Parameters the next pass declares, in the order its block declares them.
@@ -180,7 +265,7 @@ static void mmar_pass_create_quad(void) {
 //
 // Fixed point, never an exponent: kong tells int from float by the decimal
 // point alone and has no exponent literals. UPSTREAM-QUIRKS.md.
-static char *mmar_bake_params(char *src, char **ids, int count) {
+static char *mmar_bake_params(mmar_material_t *m, char *src, char **ids, int count) {
 	if (src == NULL || ids == NULL || count <= 0) {
 		return src;
 	}
@@ -203,7 +288,7 @@ static char *mmar_bake_params(char *src, char **ids, int count) {
 		}
 		done[best] = true;
 		src        = string_replace_all(src, string("constants.%s", ids[best]),
-		                                string("%.9f", mmar_param_get(ids[best])));
+		                                string("%.9f", mmar_param_get_m(m, ids[best])));
 	}
 	free(done);
 	return src;
@@ -317,7 +402,7 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 	// Declaring them resolved a location for every parameter and the value
 	// written to it never reached the shader -- see UPSTREAM-QUIRKS.md, which
 	// is also why the kernel bakes its own.
-	char *src = mmar_bake_params(kong_source, mmar_pass_params, mmar_pass_param_count);
+	char *src = mmar_bake_params(mmar_rendering, kong_source, mmar_pass_params, mmar_pass_param_count);
 
 	if (mmar_pass_cache == NULL) {
 		mmar_pass_cache = any_map_create();
@@ -427,11 +512,67 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 // Built here rather than in the plugin because a ui_node_t definition is a
 // nested structure of sockets and defaults, and assembling one through MiniC is
 // considerably more error-prone than calling a function that does it.
-// The node definition, kept so parameters can be added to it after the fact.
-// The archive is walked in one pass: the kernel is registered before its
-// parameters are known, so the sockets are appended as they turn up.
-static ui_node_t     *mmar_node_def       = NULL;
-static string_array_t *mmar_node_param_ids = NULL;
+// "Connect to Outputs": wire every socket to the material output of the same
+// name, in one click.
+//
+// The node offers nine channels and the output node takes nine inputs under
+// exactly the same names, so the mapping is not a judgement -- it is a join,
+// and doing it by hand nine times per material is the kind of work a button
+// exists for.
+// Defined in ui/ui_nodes.c, which the unity build includes after this file.
+extern bool ui_nodes_recompile_mat;
+extern bool ui_nodes_recompile_mat_final;
+
+static void mmar_connect_button(i32 node_id) {
+	if (!ui_button(tr("Connect to Outputs"), UI_ALIGN_CENTER, "")) {
+		return;
+	}
+	ui_node_canvas_t *canvas = ui_nodes_get_canvas(true);
+	if (canvas == NULL) {
+		return;
+	}
+	ui_node_t *node = ui_get_node(canvas->nodes, node_id);
+	ui_node_t *out  = parser_material_node_by_type(canvas->nodes, "OUTPUT_MATERIAL_PBR");
+	if (node == NULL || out == NULL || node->outputs == NULL || out->inputs == NULL) {
+		console_error("mmar: no material output node to connect to");
+		return;
+	}
+
+	int made = 0;
+	for (i32 i = 0; i < node->outputs->length; ++i) {
+		ui_node_socket_t *src = node->outputs->buffer[i];
+		for (i32 j = 0; j < out->inputs->length; ++j) {
+			ui_node_socket_t *dst = out->inputs->buffer[j];
+			if (src == NULL || dst == NULL || src->name == NULL || dst->name == NULL ||
+			    !string_equals(src->name, dst->name)) {
+				continue;
+			}
+			// One link per input, the rule a dragged connection follows.
+			for (i32 k = canvas->links->length - 1; k >= 0; --k) {
+				ui_node_link_t *l = canvas->links->buffer[k];
+				if (l == NULL || l->to_id != out->id || l->to_socket != j) {
+					continue;
+				}
+				for (i32 z = k; z < canvas->links->length - 1; ++z) {
+					canvas->links->buffer[z] = canvas->links->buffer[z + 1];
+				}
+				canvas->links->length--;
+			}
+			ui_node_link_t *l = (ui_node_link_t *)malloc(sizeof(ui_node_link_t));
+			l->id             = ui_next_link_id(canvas->links);
+			l->from_id        = node->id;
+			l->from_socket    = i;
+			l->to_id          = out->id;
+			l->to_socket      = j;
+			any_array_push(canvas->links, l);
+			made++;
+			break;
+		}
+	}
+	console_info(string("mmar: connected %i socket(s) to the material output", made));
+	ui_nodes_recompile_mat       = true;
+	ui_nodes_recompile_mat_final = true;
+}
 
 void mmar_register_node(char *name) {
 	// Copy: name is a MiniC value and does not survive the call that passed it.
@@ -461,14 +602,65 @@ void mmar_register_node(char *name) {
 	                                                                                             .display       = 0}),
 	                                                           },
 	                                                           1),
-	                             .buttons = any_array_create_from_raw((void *[]){}, 0),
+	                             .buttons = any_array_create_from_raw(
+	                                 (void *[]){
+	                                     ALLOC_INIT(ui_node_button_t, {.name          = "mmar_connect_button",
+	                                                                   .type          = "CUSTOM",
+	                                                                   .output        = -1,
+	                                                                   .default_value = f32_array_create_x(0),
+	                                                                   .data          = NULL,
+	                                                                   .min           = 0.0,
+	                                                                   .max           = 1.0,
+	                                                                   .precision     = 100,
+	                                                                   .height        = 1}),
+	                                 },
+	                                 1),
 	                             .width   = 0,
 	                             .flags   = 0});
 
-	any_array_t *list = any_array_create_from_raw((void *[]){def}, 1);
-	plugin_material_category_add("mmar", list);
-	mmar_node_def       = def;
-	mmar_node_param_ids = string_array_create(0);
+	// One category, however many archives are imported. category_add appends,
+	// so calling it per import left N categories holding one node each --
+	// which is what the Add menu showed.
+	any_array_t *list = NULL;
+	if (nodes_material_categories != NULL && nodes_material_list != NULL) {
+		for (i32 i = 0; i < nodes_material_categories->length; ++i) {
+			char *cat = (char *)nodes_material_categories->buffer[i];
+			if (cat != NULL && string_equals(cat, "mmar")) {
+				list = nodes_material_list->buffer[i];
+				break;
+			}
+		}
+	}
+	if (list == NULL) {
+		plugin_material_category_add("mmar", any_array_create_from_raw((void *[]){def}, 1));
+	}
+	else {
+		// Re-importing the same archive replaces its entry rather than adding
+		// a second one with the same name.
+		bool replaced = false;
+		for (i32 i = 0; i < list->length; ++i) {
+			ui_node_t *existing = list->buffer[i];
+			if (existing != NULL && existing->type != NULL && string_equals(existing->type, name)) {
+				list->buffer[i] = def;
+				replaced        = true;
+				break;
+			}
+		}
+		if (!replaced) {
+			any_array_push(list, def);
+		}
+	}
+
+	if (ui_nodes_custom_buttons != NULL) {
+		any_map_set(ui_nodes_custom_buttons, "mmar_connect_button", mmar_connect_button);
+	}
+
+	mmar_material_t *m = mmar_material_get(name);
+	m->def             = def;
+	m->node_param_ids  = string_array_create(0);
+	m->out_sockets     = string_array_create(0);
+	m->out_fields      = string_array_create(0);
+	mmar_importing     = m;
 }
 
 // Give the node one socket per channel the kernel produces.
@@ -478,24 +670,20 @@ void mmar_register_node(char *name) {
 // rest on its way to albedo and dropped them. The entry point returns a struct
 // now, so a socket is a field read off one evaluation rather than another run
 // of the whole graph.
-static string_array_t *mmar_out_sockets = NULL;
-static string_array_t *mmar_out_fields  = NULL;
-
 void mmar_add_node_output(char *socket, char *field, char *socket_type) {
-	if (mmar_node_def == NULL) {
+	mmar_material_t *m = mmar_importing;
+	if (m == NULL || m->def == NULL) {
 		return;
 	}
-	if (mmar_out_sockets == NULL) {
-		mmar_out_sockets = string_array_create(0);
-		mmar_out_fields  = string_array_create(0);
-	}
-	if (mmar_out_sockets->length == 0) {
-		// The placeholder Color socket goes when the real ones arrive.
-		mmar_node_def->outputs->length = 0;
+	if (m->out_sockets->length == 0) {
+		// The placeholder Color socket goes when the real ones arrive. Per
+		// material: this used to test a shared list, so the second archive
+		// imported kept its placeholder and came out with ten sockets.
+		m->def->outputs->length = 0;
 	}
 	char *name  = string_copy(socket);
 	bool  value = string_equals(socket_type, "VALUE");
-	any_array_push(mmar_node_def->outputs,
+	any_array_push(m->def->outputs,
 	               ALLOC_INIT(ui_node_socket_t,
 	                          {.id            = 0,
 	                           .node_id       = 0,
@@ -508,8 +696,8 @@ void mmar_add_node_output(char *socket, char *field, char *socket_type) {
 	                           .max           = 1.0,
 	                           .precision     = 100,
 	                           .display       = 0}));
-	string_array_push(mmar_out_sockets, name);
-	string_array_push(mmar_out_fields, string_copy(field));
+	string_array_push(m->out_sockets, name);
+	string_array_push(m->out_fields, string_copy(field));
 }
 
 // Give the node one knob per exposed control.
@@ -520,7 +708,8 @@ void mmar_add_node_output(char *socket, char *field, char *socket_type) {
 // The socket name is the parameter id, since that is what the kernel reads and
 // what a value written here has to land on.
 void mmar_add_node_param(char *id, float value, float min, float max) {
-	if (mmar_node_def == NULL || mmar_node_param_ids == NULL) {
+	mmar_material_t *m = mmar_importing;
+	if (m == NULL || m->def == NULL) {
 		return;
 	}
 	if (max <= min) {
@@ -530,7 +719,7 @@ void mmar_add_node_param(char *id, float value, float min, float max) {
 		max = value > 0.0f ? value * 2.0f + 1.0f : 1.0f;
 	}
 	char *stable = string_copy(id);
-	any_array_push(mmar_node_def->inputs,
+	any_array_push(m->def->inputs,
 	               ALLOC_INIT(ui_node_socket_t, {.id            = 0,
 	                                             .node_id       = 0,
 	                                             .name          = stable,
@@ -541,7 +730,7 @@ void mmar_add_node_param(char *id, float value, float min, float max) {
 	                                             .max           = max,
 	                                             .precision     = 100,
 	                                             .display       = 0}));
-	string_array_push(mmar_node_param_ids, stable);
+	string_array_push(m->node_param_ids, stable);
 }
 
 // Read the knobs off the node instance being parsed, in the order the sockets
@@ -549,20 +738,21 @@ void mmar_add_node_param(char *id, float value, float min, float max) {
 // this is where a value the user turned becomes the value the kernel reads --
 // every rebuild of the material, which is what makes the knob live.
 void mmar_read_node_params(void *node) {
-	ui_node_t *n = (ui_node_t *)node;
-	if (n == NULL || n->inputs == NULL || mmar_node_param_ids == NULL) {
+	ui_node_t       *n = (ui_node_t *)node;
+	mmar_material_t *m = mmar_material_for(node);
+	if (n == NULL || n->inputs == NULL || m == NULL || m->node_param_ids == NULL) {
 		return;
 	}
 	i32 count = n->inputs->length;
-	if (count > mmar_node_param_ids->length) {
-		count = mmar_node_param_ids->length;
+	if (count > m->node_param_ids->length) {
+		count = m->node_param_ids->length;
 	}
 	for (i32 i = 0; i < count; ++i) {
 		ui_node_socket_t *sock = n->inputs->buffer[i];
 		if (sock == NULL || sock->default_value == NULL || sock->default_value->length < 1) {
 			continue;
 		}
-		mmar_param_set(mmar_node_param_ids->buffer[i], sock->default_value->buffer[0]);
+		mmar_param_set_m(m, m->node_param_ids->buffer[i], sock->default_value->buffer[0]);
 	}
 }
 
@@ -586,50 +776,62 @@ void mmar_need_tex_coord(void) {
 // difference. So a plugin cannot hold anything between being handed an archive
 // and being asked to build a shader from it -- which is every frame the
 // material is rebuilt, and which presented as "no kernel registered".
-static char           *mmar_kernel_source = NULL;
-static char           *mmar_kernel_entry  = NULL;
-static string_array_t *mmar_kernel_reads  = NULL;
-static string_array_t *mmar_kernel_params = NULL;
-
+// Held per material rather than once: a second import used to overwrite the
+// first's kernel, so both nodes rendered whichever archive was read last.
 void mmar_set_kernel(char *source, char *entry) {
-	mmar_kernel_source = string_copy(source);
-	mmar_kernel_entry  = string_copy(entry);
-	mmar_kernel_reads  = string_array_create(0);
-	mmar_kernel_params = string_array_create(0);
+	mmar_material_t *m = mmar_importing;
+	if (m == NULL) {
+		return;
+	}
+	m->kernel_source = string_copy(source);
+	m->kernel_entry  = string_copy(entry);
+	m->kernel_reads  = string_array_create(0);
+	m->kernel_params = string_array_create(0);
 }
 
 void mmar_add_kernel_param(char *id) {
-	if (mmar_kernel_params == NULL) {
-		mmar_kernel_params = string_array_create(0);
+	if (mmar_importing == NULL) {
+		return;
 	}
-	string_array_push(mmar_kernel_params, string_copy(id));
+	if (mmar_importing->kernel_params == NULL) {
+		mmar_importing->kernel_params = string_array_create(0);
+	}
+	string_array_push(mmar_importing->kernel_params, string_copy(id));
 }
 
 // How much kernel is currently held. Exists because the plugin-side store
 // looked fine at import and was empty a frame later, and that is worth being
 // able to check rather than assume.
 int mmar_kernel_bytes(void) {
-	return mmar_kernel_source == NULL ? 0 : (int)strlen(mmar_kernel_source);
+	return mmar_importing == NULL || mmar_importing->kernel_source == NULL
+	           ? 0
+	           : (int)strlen(mmar_importing->kernel_source);
 }
 
 // How many pass inputs the kernel will declare when spliced. Worth being able
 // to check: registering the kernel clears this list, so reads recorded before
 // that call vanish and the shader then samples textures it never declared.
 int mmar_kernel_read_count(void) {
-	return mmar_kernel_reads == NULL ? 0 : mmar_kernel_reads->length;
+	return mmar_importing == NULL || mmar_importing->kernel_reads == NULL
+	           ? 0
+	           : mmar_importing->kernel_reads->length;
 }
 
 void mmar_add_kernel_read(char *id) {
-	if (mmar_kernel_reads == NULL) {
-		mmar_kernel_reads = string_array_create(0);
+	if (mmar_importing == NULL) {
+		return;
 	}
-	string_array_push(mmar_kernel_reads, string_copy(id));
+	if (mmar_importing->kernel_reads == NULL) {
+		mmar_importing->kernel_reads = string_array_create(0);
+	}
+	string_array_push(mmar_importing->kernel_reads, string_copy(id));
 }
 
 // Splice the kernel into the shader being assembled and return the expression
 // for the node's socket. Done in one call so the plugin holds no state at all.
-char *mmar_splice_kernel(char *socket) {
-	if (mmar_kernel_source == NULL || mmar_kernel_entry == NULL || parser_material_kong == NULL) {
+char *mmar_splice_kernel(void *node, char *socket) {
+	mmar_material_t *m = mmar_material_for(node);
+	if (m == NULL || m->kernel_source == NULL || m->kernel_entry == NULL || parser_material_kong == NULL) {
 		return "float3(0.0, 0.0, 0.0)";
 	}
 	double t_splice = iron_time();
@@ -640,9 +842,9 @@ char *mmar_splice_kernel(char *socket) {
 
 	// Each buffer pass the kernel samples, declared and linked to the target
 	// rendered for it. uniforms_ext_tex_link resolves "_mmar_<id>".
-	if (mmar_kernel_reads != NULL) {
-		for (i32 i = 0; i < mmar_kernel_reads->length; ++i) {
-			char *rid = mmar_kernel_reads->buffer[i];
+	if (m->kernel_reads != NULL) {
+		for (i32 i = 0; i < m->kernel_reads->length; ++i) {
+			char *rid = m->kernel_reads->buffer[i];
 			node_shader_add_texture(parser_material_kong, rid, string("_mmar_%s", rid));
 		}
 	}
@@ -656,9 +858,9 @@ char *mmar_splice_kernel(char *socket) {
 	// arrives. Every node ArmorPaint ships takes the other route: it bakes its
 	// values into the shader source and lets the material recompile, which
 	// ui_nodes already does on every knob change. So does this.
-	char *src = mmar_kernel_source;
-	if (mmar_kernel_params != NULL) {
-		src = mmar_bake_params(src, (char **)mmar_kernel_params->buffer, mmar_kernel_params->length);
+	char *src = m->kernel_source;
+	if (m->kernel_params != NULL) {
+		src = mmar_bake_params(m, src, (char **)m->kernel_params->buffer, m->kernel_params->length);
 	}
 	node_shader_add_function(parser_material_kong, src);
 	mmar_splice_ms_total += (iron_time() - t_splice) * 1000.0;
@@ -666,17 +868,17 @@ char *mmar_splice_kernel(char *socket) {
 	// Which field this socket reads. An archive cooked before the entry point
 	// returned a struct has no outputs, and its kernel still returns albedo
 	// directly -- so the bare call is the right expression for it.
-	if (mmar_out_sockets == NULL || mmar_out_sockets->length == 0) {
-		return string("%s(tex_coord)", mmar_kernel_entry);
+	if (m->out_sockets == NULL || m->out_sockets->length == 0) {
+		return string("%s(tex_coord)", m->kernel_entry);
 	}
-	char *field = mmar_out_fields->buffer[0];
-	for (i32 i = 0; i < mmar_out_sockets->length; ++i) {
-		if (socket != NULL && string_equals(mmar_out_sockets->buffer[i], socket)) {
-			field = mmar_out_fields->buffer[i];
+	char *field = m->out_fields->buffer[0];
+	for (i32 i = 0; i < m->out_sockets->length; ++i) {
+		if (socket != NULL && string_equals(m->out_sockets->buffer[i], socket)) {
+			field = m->out_fields->buffer[i];
 			break;
 		}
 	}
-	return string("%s(tex_coord).%s", mmar_kernel_entry, field);
+	return string("%s(tex_coord).%s", m->kernel_entry, field);
 }
 
 // Register an imported archive as a material node, in one call.
@@ -706,8 +908,8 @@ void mmar_node_debug(void) {
 		}
 		ui_node_t_array_t *list = nodes_material_list->buffer[i];
 		console_info(string("mmar-debug: category %i holds %i node(s)", i, list == NULL ? -1 : list->length));
-		if (list != NULL && list->length > 0) {
-			ui_node_t *n = list->buffer[0];
+		for (i32 k = 0; list != NULL && k < list->length; ++k) {
+			ui_node_t *n = list->buffer[k];
 			console_info(string("mmar-debug: node name = %s", n->name == NULL ? "(null)" : n->name));
 			console_info(string("mmar-debug: node type = %s", n->type == NULL ? "(null)" : n->type));
 			console_info(string("mmar-debug: outputs = %i", n->outputs == NULL ? -1 : n->outputs->length));

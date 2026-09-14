@@ -303,7 +303,7 @@ void                      mmar_params_rendered(void);
 void                      mmar_set_archive(char *path);
 char                     *mmar_archive_path(void);
 float                     mmar_param_value(char *id);
-char                     *mmar_splice_kernel(char *socket);
+char                     *mmar_splice_kernel(void *node, char *socket);
 void                      mmar_add_node_output(char *socket, char *field, char *socket_type);
 int                       mmar_kernel_bytes(void);
 int                       mmar_kernel_read_count(void);
