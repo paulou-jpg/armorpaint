@@ -527,6 +527,10 @@ X2(node_shader_write_frag, "v(p:node_shader_t raw,p:char s)", v, p, p)
 // plugin can evaluate a multi-pass material rather than only a single
 // spliced kernel. Exposure, not implementation: see render/make_mmar_pass.c.
 X0(mmar_need_tex_coord, "v()", v)
+X2(mmar_set_kernel, "v(p:char source,p:char entry)", v, p, p)
+X1(mmar_add_kernel_read, "v(p:char id)", v, p)
+X0(mmar_splice_kernel, "p:char()", p)
+X0(mmar_kernel_bytes, "i()", i)
 X1(mmar_register_node, "v(p:char name)", v, p)
 X1(mmar_bind_pass_input, "v(p:gpu_texture_t tex)", v, p)
 X4(mmar_run_pass, "p:gpu_texture_t(p:char id,p:char kong_source,p:char format,i size)", p, p, p, p, i)

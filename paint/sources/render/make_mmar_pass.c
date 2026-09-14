@@ -127,7 +127,10 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 		if (mmar_pass_targets == NULL) {
 			mmar_pass_targets = any_map_create();
 		}
-		any_map_set(mmar_pass_targets, id, target);
+		// string_copy: the id came from a map the caller decoded and will drop,
+		// and this key is looked up later when a material shader binds the
+		// target by name.
+		any_map_set(mmar_pass_targets, string_copy(id), target);
 	}
 	return target;
 }
@@ -184,4 +187,59 @@ void mmar_need_tex_coord(void) {
 		return;
 	}
 	node_shader_context_add_elem(parser_material_kong->context, "tex", "short2norm");
+}
+
+// Kernel state, held here rather than in the plugin.
+//
+// MiniC values do not survive the call that made them. Measured directly: a
+// 29366-byte kernel source stored into a map reads back at 29366 bytes inside
+// the importing call and 0 bytes on the next frame, with string_copy making no
+// difference. So a plugin cannot hold anything between being handed an archive
+// and being asked to build a shader from it -- which is every frame the
+// material is rebuilt, and which presented as "no kernel registered".
+static char           *mmar_kernel_source = NULL;
+static char           *mmar_kernel_entry  = NULL;
+static string_array_t *mmar_kernel_reads  = NULL;
+
+void mmar_set_kernel(char *source, char *entry) {
+	mmar_kernel_source = string_copy(source);
+	mmar_kernel_entry  = string_copy(entry);
+	mmar_kernel_reads  = string_array_create(0);
+}
+
+// How much kernel is currently held. Exists because the plugin-side store
+// looked fine at import and was empty a frame later, and that is worth being
+// able to check rather than assume.
+int mmar_kernel_bytes(void) {
+	return mmar_kernel_source == NULL ? 0 : (int)strlen(mmar_kernel_source);
+}
+
+void mmar_add_kernel_read(char *id) {
+	if (mmar_kernel_reads == NULL) {
+		mmar_kernel_reads = string_array_create(0);
+	}
+	string_array_push(mmar_kernel_reads, string_copy(id));
+}
+
+// Splice the kernel into the shader being assembled and return the expression
+// for the node's socket. Done in one call so the plugin holds no state at all.
+char *mmar_splice_kernel(void) {
+	if (mmar_kernel_source == NULL || mmar_kernel_entry == NULL || parser_material_kong == NULL) {
+		return "float3(0.0, 0.0, 0.0)";
+	}
+	// A node that samples by UV must ask for the tex vertex element, the way
+	// image_texture_node.c does; without it tex_coord never reaches the vertex
+	// shader and every sample reads the same point.
+	node_shader_context_add_elem(parser_material_kong->context, "tex", "short2norm");
+
+	// Each buffer pass the kernel samples, declared and linked to the target
+	// rendered for it. uniforms_ext_tex_link resolves "_mmar_<id>".
+	if (mmar_kernel_reads != NULL) {
+		for (i32 i = 0; i < mmar_kernel_reads->length; ++i) {
+			char *rid = mmar_kernel_reads->buffer[i];
+			node_shader_add_texture(parser_material_kong, rid, string("_mmar_%s", rid));
+		}
+	}
+	node_shader_add_function(parser_material_kong, mmar_kernel_source);
+	return string("%s(tex_coord)", mmar_kernel_entry);
 }
