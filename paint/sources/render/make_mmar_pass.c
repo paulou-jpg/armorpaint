@@ -206,6 +206,12 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 // Built here rather than in the plugin because a ui_node_t definition is a
 // nested structure of sockets and defaults, and assembling one through MiniC is
 // considerably more error-prone than calling a function that does it.
+// The node definition, kept so parameters can be added to it after the fact.
+// The archive is walked in one pass: the kernel is registered before its
+// parameters are known, so the sockets are appended as they turn up.
+static ui_node_t     *mmar_node_def       = NULL;
+static string_array_t *mmar_node_param_ids = NULL;
+
 void mmar_register_node(char *name) {
 	// Copy: name is a MiniC value and does not survive the call that passed it.
 	// It is stored in the node definition and used as the node type forever
@@ -240,6 +246,62 @@ void mmar_register_node(char *name) {
 
 	any_array_t *list = any_array_create_from_raw((void *[]){def}, 1);
 	plugin_material_category_add("mmar", list);
+	mmar_node_def       = def;
+	mmar_node_param_ids = string_array_create(0);
+}
+
+// Give the node one knob per exposed control.
+//
+// Without this the node carries a single Color output and nothing else, which
+// is what it looked like from the UI: the parameters were in the archive, were
+// spliced into the shader as host constants, and had no way to be reached.
+// The socket name is the parameter id, since that is what the kernel reads and
+// what a value written here has to land on.
+void mmar_add_node_param(char *id, float value, float min, float max) {
+	if (mmar_node_def == NULL || mmar_node_param_ids == NULL) {
+		return;
+	}
+	if (max <= min) {
+		// No range in the archive. Leave room on both sides of the cooked
+		// value rather than clamping it to a guess.
+		min = value < 0.0f ? value * 2.0f - 1.0f : 0.0f;
+		max = value > 0.0f ? value * 2.0f + 1.0f : 1.0f;
+	}
+	char *stable = string_copy(id);
+	any_array_push(mmar_node_def->inputs,
+	               ALLOC_INIT(ui_node_socket_t, {.id            = 0,
+	                                             .node_id       = 0,
+	                                             .name          = stable,
+	                                             .type          = "VALUE",
+	                                             .color         = 0xffa1a1a1,
+	                                             .default_value = f32_array_create_x(value),
+	                                             .min           = min,
+	                                             .max           = max,
+	                                             .precision     = 100,
+	                                             .display       = 0}));
+	string_array_push(mmar_node_param_ids, stable);
+}
+
+// Read the knobs off the node instance being parsed, in the order the sockets
+// were added. parser_material hands the custom-node callback the instance, so
+// this is where a value the user turned becomes the value the kernel reads --
+// every rebuild of the material, which is what makes the knob live.
+void mmar_read_node_params(void *node) {
+	ui_node_t *n = (ui_node_t *)node;
+	if (n == NULL || n->inputs == NULL || mmar_node_param_ids == NULL) {
+		return;
+	}
+	i32 count = n->inputs->length;
+	if (count > mmar_node_param_ids->length) {
+		count = mmar_node_param_ids->length;
+	}
+	for (i32 i = 0; i < count; ++i) {
+		ui_node_socket_t *sock = n->inputs->buffer[i];
+		if (sock == NULL || sock->default_value == NULL || sock->default_value->length < 1) {
+			continue;
+		}
+		mmar_param_set(mmar_node_param_ids->buffer[i], sock->default_value->buffer[0]);
+	}
 }
 
 // A material node that samples by UV has to ask for the tex vertex element, or
@@ -366,6 +428,14 @@ void mmar_node_debug(void) {
 			console_info(string("mmar-debug: node name = %s", n->name == NULL ? "(null)" : n->name));
 			console_info(string("mmar-debug: node type = %s", n->type == NULL ? "(null)" : n->type));
 			console_info(string("mmar-debug: outputs = %i", n->outputs == NULL ? -1 : n->outputs->length));
+			console_info(string("mmar-debug: inputs = %i", n->inputs == NULL ? -1 : n->inputs->length));
+			if (n->inputs != NULL) {
+				for (i32 s = 0; s < n->inputs->length; ++s) {
+					ui_node_socket_t *sock = n->inputs->buffer[s];
+					console_info(string("mmar-debug:   knob %s = %f (%f..%f)", sock->name,
+					                    sock->default_value->buffer[0], sock->min, sock->max));
+				}
+			}
 		}
 	}
 }
