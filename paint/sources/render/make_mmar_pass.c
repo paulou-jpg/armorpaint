@@ -190,6 +190,23 @@ void mmar_set_archive(char *path) {
 // The archive whose passes need rendering, and the material they belong to.
 // Several can be waiting at once -- two imported materials whose controls both
 // moved -- so this hands back one per call and clears it.
+// Is another material still waiting for its passes? The frame callback renders
+// one per call and registering it twice in a frame does not queue it twice, so
+// whoever renders has to ask for another turn.
+int mmar_has_dirty_passes(void) {
+	if (mmar_materials == NULL) {
+		return 0;
+	}
+	any_array_t *keys = map_keys(mmar_materials);
+	for (i32 i = 0; i < keys->length; ++i) {
+		mmar_material_t *m = any_map_get(mmar_materials, keys->buffer[i]);
+		if (m != NULL && m->passes_dirty && m->archive != NULL) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
 char *mmar_archive_path(void) {
 	if (mmar_materials == NULL) {
 		return NULL;
@@ -661,6 +678,8 @@ void mmar_register_node(char *name) {
 	m->out_sockets     = string_array_create(0);
 	m->out_fields      = string_array_create(0);
 	mmar_importing     = m;
+	// Deliberately not touching kernel_source here: set_kernel runs first now,
+	// and clearing it would put back the bug this pair was fixed for.
 }
 
 // Give the node one socket per channel the kernel produces.
@@ -778,15 +797,49 @@ void mmar_need_tex_coord(void) {
 // material is rebuilt, and which presented as "no kernel registered".
 // Held per material rather than once: a second import used to overwrite the
 // first's kernel, so both nodes rendered whichever archive was read last.
-void mmar_set_kernel(char *source, char *entry) {
-	mmar_material_t *m = mmar_importing;
+// Takes the name and selects the material itself, rather than relying on a
+// registration call having happened first.
+//
+// Ordering mattered and was invisible: kernel state is per material, and the
+// call that said which material was the registration -- so setting the kernel
+// first stored it against nothing and the node spliced its fallback. Doing it
+// the other way round was worse: MiniC values do not survive the call that
+// passed them, and `entry` came back as garbage on the second import, so the
+// copy would have been garbage too. Both arguments are consumed here, first,
+// before anything else can invalidate them.
+void mmar_set_kernel(char *name, char *source, char *entry) {
+	mmar_material_t *m = mmar_material_get(name);
 	if (m == NULL) {
+		console_error("mmar: no material to attach a kernel to");
 		return;
 	}
+	mmar_importing   = m;
 	m->kernel_source = string_copy(source);
-	m->kernel_entry  = string_copy(entry);
+
+	// The entry name comes back corrupted on a second import in one session --
+	// the 50 KB source survives and the ten-byte name does not. Not diagnosed;
+	// what matters is that an unusable name splices `<garbage>(tex_coord)` and
+	// the material renders flat with every step reporting success. A name that
+	// is not an identifier is refused and the format's own entry point used,
+	// out loud.
+	bool ok = entry != NULL && entry[0] != '\0' && !(entry[0] >= '0' && entry[0] <= '9');
+	for (const char *c = entry; ok && *c != '\0'; ++c) {
+		ok = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '_';
+	}
+	if (!ok) {
+		console_error(string("mmar: unusable kernel entry for '%s'; using mmar_eval", name));
+		entry = "mmar_eval";
+	}
+	m->kernel_entry = string_copy(entry);
 	m->kernel_reads  = string_array_create(0);
 	m->kernel_params = string_array_create(0);
+}
+
+// The entry name as held, for reporting. The caller's copy may already be gone.
+char *mmar_kernel_entry_name(void) {
+	return mmar_importing == NULL || mmar_importing->kernel_entry == NULL
+	           ? "(none)"
+	           : mmar_importing->kernel_entry;
 }
 
 void mmar_add_kernel_param(char *id) {
