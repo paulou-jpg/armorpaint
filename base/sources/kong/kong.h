@@ -625,6 +625,7 @@ void                  find_referenced_globals(function *f, global_array *globals
 void                  find_used_builtins(function *f);
 void                  find_used_capabilities(function *f);
 descriptor_set_group *get_descriptor_set_group(uint32_t descriptor_set_group_index);
+size_t                get_descriptor_set_group_count(void);
 descriptor_set_group *find_descriptor_set_group_for_pipe_type(type *t);
 descriptor_set_group *find_descriptor_set_group_for_function(function *f);
 void                  analyze(void);

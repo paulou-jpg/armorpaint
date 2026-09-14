@@ -7,6 +7,19 @@
 #include <string.h>
 
 static type_id     vertex_inputs[256];
+
+// A module that declares no descriptor sets has no argument buffer to thread
+// through its functions. get_descriptor_set_group(0) asserts on an empty array,
+// and that assert is compiled out in release builds, so it returned a pointer
+// past the end and the values[0] read below segfaulted the compiler. Both the
+// signature and the call site have to agree, so this is consulted in both.
+static bool metal_has_argument_buffer(void) {
+	if (get_descriptor_set_group_count() == 0) {
+		return false;
+	}
+	descriptor_set_group *group = get_descriptor_set_group(0);
+	return group != NULL && group->size > 0 && group->values[0] != NULL;
+}
 size_t             vertex_inputs_size = 0;
 static type_id     fragment_inputs[256];
 size_t             fragment_inputs_size = 0;
@@ -262,18 +275,18 @@ static void write_globals(char *code, size_t *offset) {
 		type_id base_type = t->array_size > 0 ? t->base : g->type;
 
 		if (base_type == float_id) {
-			*offset += sprintf(&code[*offset], "constant float _%" PRIu64 " = %f;\n\n", g->var_index, g->value.value.floats[0]);
+			*offset += sprintf(&code[*offset], "constant float _%" PRIu64 " = %.9g;\n\n", g->var_index, g->value.value.floats[0]);
 		}
 		else if (base_type == float2_id) {
 			*offset +=
-			    sprintf(&code[*offset], "constant float2 _%" PRIu64 " = float2(%f, %f);\n\n", g->var_index, g->value.value.floats[0], g->value.value.floats[1]);
+			    sprintf(&code[*offset], "constant float2 _%" PRIu64 " = float2(%.9g, %.9g);\n\n", g->var_index, g->value.value.floats[0], g->value.value.floats[1]);
 		}
 		else if (base_type == float3_id) {
-			*offset += sprintf(&code[*offset], "constant float3 _%" PRIu64 " = float3(%f, %f, %f);\n\n", g->var_index, g->value.value.floats[0],
+			*offset += sprintf(&code[*offset], "constant float3 _%" PRIu64 " = float3(%.9g, %.9g, %.9g);\n\n", g->var_index, g->value.value.floats[0],
 			                   g->value.value.floats[1], g->value.value.floats[2]);
 		}
 		else if (base_type == float4_id) {
-			*offset += sprintf(&code[*offset], "constant float4 _%" PRIu64 " = float4(%f, %f, %f, %f);\n\n", g->var_index, g->value.value.floats[0],
+			*offset += sprintf(&code[*offset], "constant float4 _%" PRIu64 " = float4(%.9g, %.9g, %.9g, %.9g);\n\n", g->var_index, g->value.value.floats[0],
 			                   g->value.value.floats[1], g->value.value.floats[2], g->value.value.floats[3]);
 		}
 	}
@@ -416,6 +429,15 @@ static void write_functions(char *code, size_t *offset) {
 			            get_name(f->name));
 			for (uint8_t parameter_index = 1; parameter_index < f->parameters_size; ++parameter_index) {
 				*offset += sprintf(&code[*offset], ", %s _%" PRIu64, type_string(f->parameter_types[0].type), parameter_ids[0]);
+			}
+			*offset += sprintf(&code[*offset], "%s) {\n", buffers);
+		}
+		else if (!metal_has_argument_buffer()) {
+			*offset += sprintf(&code[*offset], "%s %s(", type_string(f->return_type.type), get_name(f->name));
+
+			for (uint8_t parameter_index = 0; parameter_index < f->parameters_size; ++parameter_index) {
+				*offset += sprintf(&code[*offset], "%s%s _%" PRIu64, parameter_index == 0 ? "" : ", ",
+				                   type_string(f->parameter_types[parameter_index].type), parameter_ids[parameter_index]);
 			}
 			*offset += sprintf(&code[*offset], "%s) {\n", buffers);
 		}
@@ -772,7 +794,7 @@ static void write_functions(char *code, size_t *offset) {
 						}
 					}
 
-					if (!is_built_in) {
+					if (!is_built_in && metal_has_argument_buffer()) {
 						*offset += sprintf(&code[*offset], "argument_buffer0");
 						if (o->op_call.parameters_size > 0) {
 							*offset += sprintf(&code[*offset], ", ");

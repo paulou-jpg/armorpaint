@@ -313,14 +313,14 @@ static void write_globals(char *hlsl, size_t *offset, function *main, function *
 			*offset += sprintf(&hlsl[*offset], "RaytracingAccelerationStructure  _%" PRIu64 " : register(t%i);\n\n", g->var_index, register_index);
 		}
 		else if (base_type == float_id) {
-			*offset += sprintf(&hlsl[*offset], "static const float _%" PRIu64 " = %f;\n\n", g->var_index, g->value.value.floats[0]);
+			*offset += sprintf(&hlsl[*offset], "static const float _%" PRIu64 " = %.9g;\n\n", g->var_index, g->value.value.floats[0]);
 		}
 		else if (base_type == float2_id) {
-			*offset += sprintf(&hlsl[*offset], "static const float2 _%" PRIu64 " = float2(%f, %f);\n\n", g->var_index, g->value.value.floats[0],
+			*offset += sprintf(&hlsl[*offset], "static const float2 _%" PRIu64 " = float2(%.9g, %.9g);\n\n", g->var_index, g->value.value.floats[0],
 			                   g->value.value.floats[1]);
 		}
 		else if (base_type == float3_id) {
-			*offset += sprintf(&hlsl[*offset], "static const float3 _%" PRIu64 " = float3(%f, %f, %f);\n\n", g->var_index, g->value.value.floats[0],
+			*offset += sprintf(&hlsl[*offset], "static const float3 _%" PRIu64 " = float3(%.9g, %.9g, %.9g);\n\n", g->var_index, g->value.value.floats[0],
 			                   g->value.value.floats[1], g->value.value.floats[2]);
 		}
 		else if (base_type == float4_id) {
@@ -329,7 +329,7 @@ static void write_globals(char *hlsl, size_t *offset, function *main, function *
 				*offset += sprintf(&hlsl[*offset], "RWStructuredBuffer<_%llu_type> _%llu : register(u%i);\n", g->var_index, g->var_index, register_index);
 			}
 			else {
-				*offset += sprintf(&hlsl[*offset], "static const float4 _%" PRIu64 " = float4(%f, %f, %f, %f);\n\n", g->var_index, g->value.value.floats[0],
+				*offset += sprintf(&hlsl[*offset], "static const float4 _%" PRIu64 " = float4(%.9g, %.9g, %.9g, %.9g);\n\n", g->var_index, g->value.value.floats[0],
 				                   g->value.value.floats[1], g->value.value.floats[2], g->value.value.floats[3]);
 			}
 		}

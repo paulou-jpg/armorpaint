@@ -688,6 +688,10 @@ descriptor_set_group *get_descriptor_set_group(uint32_t descriptor_set_group_ind
 	return &all_descriptor_set_groups.values[descriptor_set_group_index];
 }
 
+size_t get_descriptor_set_group_count(void) {
+	return all_descriptor_set_groups.size;
+}
+
 static void assign_descriptor_set_group_index(function *f, uint32_t descriptor_set_group_index) {
 	assert(f->descriptor_set_group_index == UINT32_MAX || f->descriptor_set_group_index == descriptor_set_group_index);
 	f->descriptor_set_group_index = descriptor_set_group_index;
@@ -1231,7 +1235,15 @@ variable emit_expression(opcodes *code, block *parent, expression *e) {
 		opcode o;
 		o.type                        = OPCODE_LOAD_INT_CONSTANT;
 		o.size                        = OP_SIZE(o, op_load_float_constant);
-		o.op_load_int_constant.number = (int)e->number;
+		// Literals are parsed with strtod, so a uint32 constant such as
+		// 2891336453 arrives here as a double above INT32_MAX. Casting that
+		// straight to int is undefined on overflow and saturates to INT_MIN on
+		// x86, silently destroying the constant on every backend. Narrow
+		// through uint32, which is defined for the whole range and preserves
+		// the bit pattern the shading languages expect.
+		o.op_load_int_constant.number = (e->number > (double)INT32_MAX && e->number <= (double)UINT32_MAX)
+		                                    ? (int)(uint32_t)e->number
+		                                    : (int)e->number;
 		o.op_load_int_constant.to     = v;
 		emit_op(code, &o);
 

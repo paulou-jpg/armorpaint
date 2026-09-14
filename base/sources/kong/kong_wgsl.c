@@ -278,7 +278,7 @@ static void write_globals(char *wgsl, size_t *offset, function *main, bool *fram
 		type   *t         = get_type(g->type);
 		type_id base_type = t->array_size > 0 ? t->base : g->type;
 		if (base_type == float_id) {
-			*offset += sprintf(&wgsl[*offset], "const _%" PRIu64 ": f32 = %f;\n\n", g->var_index, g->value.value.floats[0]);
+			*offset += sprintf(&wgsl[*offset], "const _%" PRIu64 ": f32 = %.9g;\n\n", g->var_index, g->value.value.floats[0]);
 		}
 	}
 
@@ -816,7 +816,7 @@ static void write_functions(char *code, size_t *offset, shader_stage stage, func
 			}
 			case OPCODE_LOAD_FLOAT_CONSTANT:
 				indent(code, offset, indentation);
-				*offset += sprintf(&code[*offset], "var _%" PRIu64 ": %s = %f;\n", o->op_load_float_constant.to.index,
+				*offset += sprintf(&code[*offset], "var _%" PRIu64 ": %s = %.9g;\n", o->op_load_float_constant.to.index,
 				                   type_string(o->op_load_float_constant.to.type.type), o->op_load_float_constant.number);
 				break;
 			case OPCODE_LOAD_INT_CONSTANT:

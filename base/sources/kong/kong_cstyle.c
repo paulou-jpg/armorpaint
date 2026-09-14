@@ -139,7 +139,7 @@ void cstyle_write_opcode(char *code, size_t *offset, opcode *o, type_string_func
 	}
 	case OPCODE_LOAD_FLOAT_CONSTANT:
 		indent(code, offset, *indentation);
-		*offset += sprintf(&code[*offset], "%s _%" PRIu64 " = %f;\n", type_string(o->op_load_float_constant.to.type.type), o->op_load_float_constant.to.index,
+		*offset += sprintf(&code[*offset], "%s _%" PRIu64 " = %.9g;\n", type_string(o->op_load_float_constant.to.type.type), o->op_load_float_constant.to.index,
 		                   o->op_load_float_constant.number);
 		break;
 	case OPCODE_LOAD_INT_CONSTANT:
