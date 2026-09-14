@@ -83,8 +83,25 @@ int  last_window_width  = 0;
 int  last_window_height = 0;
 #endif
 char temp_string[1024 * 128];
-char temp_string_vs[1024 * 128];
-char temp_string_fs[1024 * 128];
+// Grown to fit rather than fixed at 128 KB. A runtime-assembled shader can go
+// well past that -- a material node that splices in a cooked shader does -- and
+// the strcpy below does not fail gracefully: __strcpy_chk aborts the process.
+char  *temp_string_vs      = NULL;
+char  *temp_string_fs      = NULL;
+size_t temp_string_vs_size = 0;
+size_t temp_string_fs_size = 0;
+
+static char *temp_string_grow(char **buf, size_t *cap, size_t need) {
+	if (need > *cap) {
+		char *grown = realloc(*buf, need);
+		if (grown == NULL) {
+			return NULL;
+		}
+		*buf = grown;
+		*cap = need;
+	}
+	return *buf;
+}
 #ifdef IRON_WINDOWS
 wchar_t        temp_wstring[1024 * 32];
 struct HWND__ *iron_windows_window_handle();
@@ -720,8 +737,15 @@ void gpu_create_shaders_from_kong(char *kong, char **vs, char **fs, int *vs_size
 #endif
 
 gpu_shader_t *gpu_create_shader_from_source(char *source, int source_size, gpu_shader_type_t shader_type) {
-	gpu_shader_t *shader        = (gpu_shader_t *)malloc(sizeof(gpu_shader_t));
-	char         *temp_string_s = shader_type == GPU_SHADER_TYPE_VERTEX ? temp_string_vs : temp_string_fs;
+	gpu_shader_t *shader = (gpu_shader_t *)malloc(sizeof(gpu_shader_t));
+	size_t        need   = strlen(source) + 1;
+	char         *temp_string_s =
+	    shader_type == GPU_SHADER_TYPE_VERTEX ? temp_string_grow(&temp_string_vs, &temp_string_vs_size, need)
+	                                          : temp_string_grow(&temp_string_fs, &temp_string_fs_size, need);
+	if (temp_string_s == NULL) {
+		free(shader);
+		return NULL;
+	}
 
 #ifdef WITH_D3DCOMPILER
 
