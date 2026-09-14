@@ -173,3 +173,15 @@ void mmar_register_node(char *name) {
 	any_array_t *list = any_array_create_from_raw((void *[]){def}, 1);
 	plugin_material_category_add("mmar", list);
 }
+
+// A material node that samples by UV has to ask for the tex vertex element, or
+// tex_coord is never plumbed through the vertex shader and every sample lands
+// at the same point. ArmorPaint's own texture nodes do this via
+// node_shader_context_add_elem; that takes the shader's context, which is not
+// something MiniC can reach through an opaque pointer, so this wraps it.
+void mmar_need_tex_coord(void) {
+	if (parser_material_kong == NULL) {
+		return;
+	}
+	node_shader_context_add_elem(parser_material_kong->context, "tex", "short2norm");
+}
