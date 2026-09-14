@@ -42,6 +42,13 @@ static float mmar_param_get(char *id) {
 	return v == NULL ? 0.0f : *v;
 }
 
+// Bumped whenever a value actually moves, and recorded when the passes last
+// rendered. A pass bakes its values in, so the only way a knob reaches one is
+// to run it again -- and the only way to know that is needed is to notice the
+// value changed. Comparing a counter beats walking the store every parse.
+static uint32_t mmar_param_epoch          = 0;
+static uint32_t mmar_param_epoch_rendered = 0;
+
 void mmar_param_set(char *id, float value) {
 	if (mmar_params == NULL) {
 		mmar_params = any_map_create();
@@ -50,8 +57,39 @@ void mmar_param_set(char *id, float value) {
 	if (v == NULL) {
 		v = malloc(sizeof(float));
 		any_map_set(mmar_params, string_copy(id), v);
+		*v = value;
+		mmar_param_epoch++;
+		return;
 	}
-	*v = value;
+	if (*v != value) {
+		*v = value;
+		mmar_param_epoch++;
+	}
+}
+
+// Has any value moved since the passes were last rendered?
+int mmar_params_changed(void) {
+	return mmar_param_epoch != mmar_param_epoch_rendered ? 1 : 0;
+}
+
+void mmar_params_rendered(void) {
+	mmar_param_epoch_rendered = mmar_param_epoch;
+}
+
+// The archive the passes come from, held here rather than in the plugin.
+//
+// Re-rendering happens a frame after the value changed, and a MiniC value does
+// not survive the call that made it. The path is small and the archive is
+// re-decoded from it each time -- the same trade e8b4143 made for the first
+// render, now that there is more than one.
+static char *mmar_archive = NULL;
+
+void mmar_set_archive(char *path) {
+	mmar_archive = string_copy(path);
+}
+
+char *mmar_archive_path(void) {
+	return mmar_archive;
 }
 
 float mmar_param_value(char *id) {
@@ -146,6 +184,56 @@ static char *mmar_bake_params(char *src, char **ids, int count) {
 	return src;
 }
 
+// What a pass keeps between runs.
+//
+// Compiling is the expensive half -- kong to Metal to pipeline, about as costly
+// as every pass's draw put together -- and a pass re-renders whenever a control
+// that drives one moves. The baked source is the cache key precisely because
+// the values are in it: a pass with no parameters keeps its pipeline for the
+// life of the import, and a parameterised one rebuilds only its own.
+typedef struct mmar_pass_cache {
+	char             *source; // the baked source this pipeline was built from
+	shader_context_t *con;
+	gpu_texture_t    *target;
+	int               size;
+	char             *format;
+} mmar_pass_cache_t;
+
+static any_map_t *mmar_pass_cache = NULL;
+
+// Compiled vs reused since the counter was last read. A re-render that
+// recompiled everything and one that recompiled the two passes a control
+// actually drives look identical from the outside, and the difference is the
+// whole reason the cache exists.
+static int mmar_pass_compiled = 0;
+static int mmar_pass_reused   = 0;
+
+int mmar_pass_compile_count(void) {
+	int n              = mmar_pass_compiled;
+	mmar_pass_compiled = 0;
+	return n;
+}
+
+int mmar_pass_reuse_count(void) {
+	int n            = mmar_pass_reused;
+	mmar_pass_reused = 0;
+	return n;
+}
+
+static void mmar_pass_draw(shader_context_t *con, gpu_texture_t *target, int size) {
+	_gpu_begin(target, NULL, NULL, GPU_CLEAR_COLOR, 0, 0.0);
+	gpu_set_pipeline(con->_->pipe);
+	for (int i = 0; i < mmar_pass_input_count; ++i) {
+		gpu_set_texture(i, mmar_pass_inputs[i]);
+	}
+	gpu_set_vertex_buffer(mmar_pass_vb);
+	gpu_set_index_buffer(mmar_pass_ib);
+	gpu_draw();
+	gpu_end();
+	mmar_pass_input_count = 0;
+	mmar_pass_param_count = 0;
+}
+
 gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size) {
 	if (kong_source == NULL || size <= 0) {
 		console_error("mmar: pass has no source, or a size of zero");
@@ -156,6 +244,33 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 	}
 
 	char *fmt = (format == NULL || string_length(format) == 0) ? "RGBA32" : format;
+
+	// Parameter values go into the source, not into a bound constant.
+	//
+	// Declaring them resolved a location for every parameter and the value
+	// written to it never reached the shader -- see UPSTREAM-QUIRKS.md, which
+	// is also why the kernel bakes its own.
+	char *src = mmar_bake_params(kong_source, mmar_pass_params, mmar_pass_param_count);
+
+	if (mmar_pass_cache == NULL) {
+		mmar_pass_cache = any_map_create();
+	}
+	// Keyed by archive as well as id: pass ids are `texture_<n>` and start
+	// again from the same numbers in the next archive, so two materials open
+	// at once would otherwise share an entry.
+	char              *key    = id == NULL ? NULL : string("%s|%s", mmar_archive_path(), id);
+	mmar_pass_cache_t *cached = key == NULL ? NULL : any_map_get(mmar_pass_cache, key);
+	bool reuse = cached != NULL && cached->con != NULL && cached->target != NULL &&
+	             cached->size == size && string_equals(cached->format, fmt) &&
+	             string_equals(cached->source, src);
+	if (reuse) {
+		// Nothing about this pass changed. It still redraws, because a pass
+		// downstream of a changed one has to: its input moved even though it
+		// did not. The draw is the cheap half.
+		mmar_pass_reused++;
+		mmar_pass_draw(cached->con, cached->target, size);
+		return cached->target;
+	}
 
 	shader_context_t *con = ALLOC_INIT(shader_context_t,
 	                                   {.name              = "mmar_pass",
@@ -171,14 +286,6 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
                                           1),
 	                                    .color_attachments = any_array_create_from_raw((void *[]){fmt}, 1)});
 	con->_ = ALLOC_INIT(shader_context_runtime_t, {0});
-
-	// Parameter values go into the source, not into a bound constant.
-	//
-	// Declaring them resolved a location for every parameter and the value
-	// written to it never reached the shader -- see UPSTREAM-QUIRKS.md, which
-	// is also why the kernel bakes its own. A pass is compiled from source on
-	// every run, so there is nothing to keep by binding.
-	char *src = mmar_bake_params(kong_source, mmar_pass_params, mmar_pass_param_count);
 
 	gpu_create_shaders_from_kong(src, &con->vertex_shader, &con->fragment_shader, &con->_->vertex_shader_size,
 	                             &con->_->fragment_shader_size);
@@ -197,22 +304,22 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 		return NULL;
 	}
 	shader_context_load(con);
+	mmar_pass_compiled++;
 
-
-	gpu_texture_t *target = gpu_create_render_target(size, size, shader_context_get_tex_format(fmt));
-
-	_gpu_begin(target, NULL, NULL, GPU_CLEAR_COLOR, 0, 0.0);
-	gpu_set_pipeline(con->_->pipe);
-	for (int i = 0; i < mmar_pass_input_count; ++i) {
-		gpu_set_texture(i, mmar_pass_inputs[i]);
+	// The target outlives the pipeline. Its size and format come from the
+	// archive and do not move when a value does, so re-rendering reuses it --
+	// otherwise a knob drag would allocate a fresh set every frame and the
+	// material would keep sampling whichever one it was handed first.
+	gpu_texture_t *target = cached != NULL ? cached->target : NULL;
+	if (target == NULL || (cached != NULL && (cached->size != size || !string_equals(cached->format, fmt)))) {
+		if (target != NULL) {
+			gpu_texture_destroy(target);
+		}
+		target = gpu_create_render_target(size, size, shader_context_get_tex_format(fmt));
 	}
-	gpu_set_vertex_buffer(mmar_pass_vb);
-	gpu_set_index_buffer(mmar_pass_ib);
-	gpu_draw();
-	gpu_end();
 
-	mmar_pass_input_count = 0;
-	mmar_pass_param_count = 0;
+	mmar_pass_draw(con, target, size);
+
 	if (id != NULL) {
 		if (mmar_pass_targets == NULL) {
 			mmar_pass_targets = any_map_create();
@@ -221,6 +328,21 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 		// and this key is looked up later when a material shader binds the
 		// target by name.
 		any_map_set(mmar_pass_targets, string_copy(id), target);
+
+		if (cached == NULL) {
+			cached = ALLOC_INIT(mmar_pass_cache_t, {0});
+			any_map_set(mmar_pass_cache, string_copy(key), cached);
+		}
+		else if (cached->con != NULL) {
+			// Replaced, not accumulated: one pipeline per pass at a time,
+			// however many times a control moves.
+			shader_context_delete(cached->con);
+		}
+		cached->source = string_copy(src);
+		cached->con    = con;
+		cached->target = target;
+		cached->size   = size;
+		cached->format = string_copy(fmt);
 	}
 	return target;
 }
