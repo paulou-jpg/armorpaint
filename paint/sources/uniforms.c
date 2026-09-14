@@ -380,6 +380,16 @@ static gpu_texture_t *_uniforms_ext_get_target(char *name) {
 }
 
 gpu_texture_t *uniforms_ext_tex_link(object_t *object, shader_data_t *mat, char *link) {
+	// A cooked .mmar material samples its own buffer passes, which are rendered
+	// into targets rather than loaded from files. render/make_mmar_pass.c keys
+	// them by pass id; the shader asks for them as "_mmar_<id>".
+	if (starts_with(link, "_mmar_")) {
+		if (mmar_pass_targets == NULL) {
+			return NULL;
+		}
+		return any_map_get(mmar_pass_targets, link + 6);
+	}
+
 	if (string_equals(link, "_texpaint_undo")) {
 		i32 i = history_undo_i - 1 < 0 ? g_config->undo_steps - 1 : history_undo_i - 1;
 		return _uniforms_ext_get_target(string_tmp("texpaint_undo%d", i));

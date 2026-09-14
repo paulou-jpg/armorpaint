@@ -102,6 +102,7 @@ i32              pipes_cursor_decal_gbuffer0;
 i32              pipes_offset;
 any_map_t       *import_texture_importers;
 any_map_t       *import_text_importers;
+extern any_map_t *mmar_pass_targets;
 
 #ifdef IRON_WINDOWS
 char *ui_files_default_path = "C:\\Users";

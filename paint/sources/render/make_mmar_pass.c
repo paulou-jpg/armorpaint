@@ -24,6 +24,10 @@ static gpu_buffer_t *mmar_pass_ib = NULL;
 // Inputs for the next pass, in the order the pass declares them. A pass samples
 // the results of earlier ones, so without this every chained pass reads an
 // unbound texture -- which draws without complaint and produces nothing.
+// Rendered pass targets, keyed by pass id. The material shader samples these
+// by name, and uniforms_ext_tex_link resolves "_mmar_<id>" through here.
+any_map_t *mmar_pass_targets = NULL;
+
 #define MMAR_MAX_INPUTS 16
 static gpu_texture_t *mmar_pass_inputs[MMAR_MAX_INPUTS];
 static int            mmar_pass_input_count = 0;
@@ -61,7 +65,7 @@ static void mmar_pass_create_quad(void) {
 // the runtime kong compiler needs a context the headless script path does not
 // provide, and passes have to be driven from inside the render path rather than
 // at import time. See issue #13.
-gpu_texture_t *mmar_run_pass(char *kong_source, char *format, int size) {
+gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size) {
 	if (kong_source == NULL || size <= 0) {
 		console_error("mmar: pass has no source, or a size of zero");
 		return NULL;
@@ -119,6 +123,12 @@ gpu_texture_t *mmar_run_pass(char *kong_source, char *format, int size) {
 	gpu_end();
 
 	mmar_pass_input_count = 0;
+	if (id != NULL) {
+		if (mmar_pass_targets == NULL) {
+			mmar_pass_targets = any_map_create();
+		}
+		any_map_set(mmar_pass_targets, id, target);
+	}
 	return target;
 }
 

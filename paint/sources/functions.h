@@ -276,7 +276,7 @@ void                      context_set_camera_controls(int i);
 void                      context_set_render_path();
 bool                      context_enable_import_plugin(char *file);
 void                      node_shader_add_out(node_shader_t *raw, char *s);
-gpu_texture_t            *mmar_run_pass(char *kong_source, char *format, int size);
+gpu_texture_t            *mmar_run_pass(char *id, char *kong_source, char *format, int size);
 void                      mmar_bind_pass_input(gpu_texture_t *tex);
 void                      mmar_register_node(char *name);
 void                      node_shader_add_constant(node_shader_t *raw, char *s, char *link);
