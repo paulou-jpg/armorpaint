@@ -383,16 +383,31 @@ char *mmar_splice_kernel(void) {
 			node_shader_add_texture(parser_material_kong, rid, string("_mmar_%s", rid));
 		}
 	}
-	// The kernel reaches its parameters through ArmorPaint's own constants
-	// block, so each one is declared as a host constant with a link that
-	// uniforms_ext_f32_link resolves back to the store above.
+	// Parameter values are written into the kernel as literals rather than
+	// declared as bound constants.
+	//
+	// The bound route is the tidier one and it is already wired: each id has a
+	// `_mmar_p_<id>` link and uniforms_ext_f32_link resolves it. It does not
+	// reach the shader -- the same thing measured on the pass path, where a
+	// location resolves per parameter and the value written to it never
+	// arrives. Every node ArmorPaint ships takes the other route: it bakes its
+	// values into the shader source and lets the material recompile, which
+	// ui_nodes already does on every knob change. So does this.
+	char *src = mmar_kernel_source;
 	if (mmar_kernel_params != NULL) {
 		for (i32 i = 0; i < mmar_kernel_params->length; ++i) {
 			char *pid = mmar_kernel_params->buffer[i];
-			node_shader_add_constant(parser_material_kong, string("%s: float", pid), string("_mmar_p_%s", pid));
+			// Fixed point, always with a decimal point and never an
+			// exponent. kong separates int from float by that point alone, so
+			// a value landing on a whole number would otherwise type as an int;
+			// and it has no exponent literals at all, so %g would emit source
+			// it cannot parse for any small value. UPSTREAM-QUIRKS.md.
+			char *lit  = string("%.9f", mmar_param_get(pid));
+			char *next = string_replace_all(src, string("constants.%s", pid), lit);
+			src        = next;
 		}
 	}
-	node_shader_add_function(parser_material_kong, mmar_kernel_source);
+	node_shader_add_function(parser_material_kong, src);
 	return string("%s(tex_coord)", mmar_kernel_entry);
 }
 
