@@ -6195,6 +6195,18 @@ void gpu_create_shaders_from_kong(char *kong, char **vs, char **fs, int *vs_size
 
 	if (kong_error) {
 		console_info("Warning: Shader compilation failed");
+		// Keep the source that failed. A runtime shader is assembled from
+		// several contributors, so "compilation failed" on its own does not say
+		// whose text was wrong -- and the diagnostic above it is easy to lose
+		// in a GUI session where kong prints to stdout and the console does not.
+		{
+			FILE *f = fopen("/tmp/kong_failed_shader.kong", "wb");
+			if (f != NULL) {
+				fwrite(kong, 1, strlen(kong), f);
+				fclose(f);
+				console_info("Warning: source written to /tmp/kong_failed_shader.kong");
+			}
+		}
 #if defined(__APPLE__)
 		*vs = "";
 		*fs = "";
