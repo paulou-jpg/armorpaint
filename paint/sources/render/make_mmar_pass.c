@@ -48,6 +48,10 @@ typedef struct mmar_material {
 	string_array_t *out_sockets;
 	string_array_t *out_fields;
 	string_array_t *node_param_ids;
+	// Index of the first harvested-seed knob in def->inputs. The cook orders
+	// author-tagged controls first, so one boundary separates the two with no
+	// per-socket bookkeeping. -1 means the archive declared no seeds.
+	i32             node_seed_start;
 	bool            passes_dirty;
 } mmar_material_t;
 
@@ -624,8 +628,20 @@ void mmar_register_node(char *name) {
 	                                                                   .max           = 1.0,
 	                                                                   .precision     = 100,
 	                                                                   .height        = 1}),
+	                                     // Seeds are useful -- they are the one baked value a host can roll --
+	                                     // but a graph that exposes six chosen controls should not open with
+	                                     // sixteen of them. Collapsed by default, one click away.
+	                                     ALLOC_INIT(ui_node_button_t, {.name          = "Seeds",
+	                                                                   .type          = "BOOL",
+	                                                                   .output        = -1,
+	                                                                   .default_value = f32_array_create_x(0),
+	                                                                   .data          = NULL,
+	                                                                   .min           = 0.0,
+	                                                                   .max           = 1.0,
+	                                                                   .precision     = 100,
+	                                                                   .height        = 1}),
 	                                 },
-	                                 1),
+	                                 2),
 	                             .width   = 0,
 	                             .flags   = 0});
 
@@ -669,6 +685,7 @@ void mmar_register_node(char *name) {
 	mmar_material_t *m = mmar_material_get(name);
 	m->def             = def;
 	m->node_param_ids  = string_array_create(0);
+	m->node_seed_start = -1;
 	m->out_sockets     = string_array_create(0);
 	m->out_fields      = string_array_create(0);
 	mmar_importing     = m;
@@ -746,6 +763,42 @@ void mmar_add_node_param(char *id, float value, float min, float max) {
 	string_array_push(m->node_param_ids, stable);
 }
 
+// Where the harvested seeds begin, as the archive ordered them. Called once
+// after the knobs are registered; a count of -1 or one past the end leaves
+// every knob visible.
+void mmar_set_seed_start(int index) {
+	mmar_material_t *m = mmar_importing;
+	if (m != NULL) {
+		m->node_seed_start = index;
+	}
+}
+
+// Hide or show the seed knobs to match this node's "Seeds" toggle. Called on
+// every parse, which is also every time a button moves, so the node relayouts
+// as soon as it is clicked.
+static void mmar_sync_seed_visibility(ui_node_t *n, mmar_material_t *m) {
+	if (n == NULL || n->inputs == NULL || m == NULL || m->node_seed_start < 0) {
+		return;
+	}
+	bool show = false;
+	if (n->buttons != NULL) {
+		for (i32 i = 0; i < n->buttons->length; ++i) {
+			ui_node_button_t *b = n->buttons->buffer[i];
+			if (b != NULL && b->name != NULL && string_equals(b->name, "Seeds") &&
+			    b->default_value != NULL && b->default_value->length > 0) {
+				show = b->default_value->buffer[0] != 0.0f;
+				break;
+			}
+		}
+	}
+	for (i32 i = m->node_seed_start; i < n->inputs->length; ++i) {
+		ui_node_socket_t *sock = n->inputs->buffer[i];
+		if (sock != NULL) {
+			sock->hidden = show ? 0 : 1;
+		}
+	}
+}
+
 // Read the knobs off the node instance being parsed, in the order the sockets
 // were added. parser_material hands the custom-node callback the instance, so
 // this is where a value the user turned becomes the value the kernel reads --
@@ -756,6 +809,7 @@ void mmar_read_node_params(void *node) {
 	if (n == NULL || n->inputs == NULL || m == NULL || m->node_param_ids == NULL) {
 		return;
 	}
+	mmar_sync_seed_visibility(n, m);
 	i32 count = n->inputs->length;
 	if (count > m->node_param_ids->length) {
 		count = m->node_param_ids->length;

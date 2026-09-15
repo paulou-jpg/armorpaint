@@ -439,6 +439,10 @@ typedef struct ui_node_socket {
 	float        max;
 	float        precision;
 	int          display;
+	// Laid out and drawn only when clear. The socket stays in the array at its
+	// own index, so links, value reads and every other index into inputs[] are
+	// unaffected -- this hides a row, it does not remove a parameter.
+	int          hidden;
 } ui_node_socket_t;
 
 typedef struct ui_node_button {

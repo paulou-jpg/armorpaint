@@ -134,6 +134,9 @@ bool ui_input_linked(ui_node_canvas_t *canvas, int node_id, int i) {
 float UI_INPUTS_H(ui_node_canvas_t *canvas, ui_node_socket_t **sockets, int sockets_count, int length) {
 	float h = 0.0;
 	for (int i = 0; i < (length < 0 ? sockets_count : length); ++i) {
+		if (sockets[i]->hidden) {
+			continue;
+		}
 		if (strcmp(sockets[i]->type, "VECTOR") == 0 && sockets[i]->display == 1 && !ui_input_linked(canvas, sockets[i]->node_id, i)) {
 			h += UI_LINE_H() * 4;
 		}
@@ -596,6 +599,9 @@ void ui_node_draw_body(ui_node_t *node, ui_node_canvas_t *canvas, float nx, floa
 	// Inputs
 	for (int i = 0; i < node->inputs->length; ++i) {
 		ui_node_socket_t *inp = node->inputs->buffer[i];
+		if (inp->hidden) {
+			continue;
+		}
 		ny += lineh;
 		draw_set_color(inp->color);
 		draw_scaled_image(&ui_socket_image, nx - ui_p(6), ny - ui_p(3), ui_p(12), ui_p(12));
