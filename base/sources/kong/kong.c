@@ -2809,18 +2809,28 @@ char *get_name(name_id id) {
 }
 
 ////
-static statement statements_buffer[4096];
-int              statement_index = 0;
+// Same pool, same reason, same bug as the expressions above: `&buffer[i]` is
+// never NULL, so the check below could not fire. At 12320 bytes a statement,
+// 4096 of them are already 48MB of BSS, so this one especially has to pay only
+// for what it uses. #20.
+#define STATEMENTS_PER_BLOCK 1024
+#define MAX_STATEMENT_BLOCKS 1024
+static statement *statement_blocks[MAX_STATEMENT_BLOCKS];
+int               statement_index = 0;
 ////
 
 static statement *statement_allocate(void) {
 	////
 	// statement    *s       = (statement *)malloc(sizeof(statement));
-	statement *s = &statements_buffer[statement_index];
-	statement_index++;
-	////
 	debug_context context = {0};
-	check(s != NULL, context, "Could not allocate statement");
+	size_t        block = (size_t)statement_index / STATEMENTS_PER_BLOCK;
+	check(block < MAX_STATEMENT_BLOCKS, context, "Out of statements");
+	if (statement_blocks[block] == NULL) {
+		statement_blocks[block] = (statement *)calloc(STATEMENTS_PER_BLOCK, sizeof(statement));
+	}
+	check(statement_blocks[block] != NULL, context, "Could not allocate statements");
+	statement *s = &statement_blocks[block][statement_index % STATEMENTS_PER_BLOCK];
+	statement_index++;
 	return s;
 }
 
