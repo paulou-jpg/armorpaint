@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define OPCODES_SIZE                         (1024 * 1024 * 2)
+#define OPCODES_SIZE                         (1024 * 1024 * 8)
 #define OP_SIZE(op, opmember)                offsetof(opcode, opmember) + sizeof(op.opmember)
 #define NO_FUNCTION                          0xFFFFFFFF
 #define NO_NAME                              0
@@ -19,7 +19,7 @@
 #define TRANSFORM_FLAG_ONE_COMPONENT_SWIZZLE (1 << 0)
 #define TRANSFORM_FLAG_BINARY_UNIFY_LENGTH   (1 << 1)
 #define NO_TYPE                              0xFFFFFFFF
-#define MAX_MEMBERS                          128
+#define MAX_MEMBERS                          256
 #define HASH_MAP_SIZE                        256
 
 #define static_array(type, name, max_size) \

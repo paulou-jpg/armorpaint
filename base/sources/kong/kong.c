@@ -868,7 +868,10 @@ variable allocate_variable(type_ref type, variable_kind kind) {
 }
 
 opcode *emit_op(opcodes *code, opcode *o) {
-	assert(code->size + o->size < OPCODES_SIZE);
+	{
+		debug_context context = {0};
+		check(code->size + o->size < OPCODES_SIZE, context, "Out of opcode space");
+	}
 
 	if (code->o == NULL) {
 		code->o = (uint8_t *)malloc(OPCODES_SIZE);
@@ -2831,18 +2834,35 @@ static void statements_add(statements *statements, statement *statement) {
 }
 
 ////
-static expression experessions_buffer[8192];
-int               expression_index = 0;
+// Expressions come from a pool because they are never freed individually and
+// the parser holds pointers to them for the life of the compile -- so the pool
+// must never move an expression once handed out. One flat array cannot do that
+// and also grow: it was `expression experessions_buffer[8192]`, and at 2096
+// bytes an entry that is already 16MB of BSS, so it could not simply be made
+// bigger either. Blocks give pointer stability and pay only for what is used.
+//
+// It had no bound check. `&buffer[i]` is never NULL, so the `e != NULL` below
+// was vacuous and the parser walked off the end: medieval_wall peaks at 16389
+// expressions and stylized_wall at 8508, both past 8192, and both corrupted
+// memory rather than reporting anything. #20.
+#define EXPRESSIONS_PER_BLOCK 8192
+#define MAX_EXPRESSION_BLOCKS 256
+static expression *expression_blocks[MAX_EXPRESSION_BLOCKS];
+int                expression_index = 0;
 ////
 
 static expression *expression_allocate(void) {
 	////
 	// expression   *e       = (expression *)malloc(sizeof(expression));
-	expression *e = &experessions_buffer[expression_index];
-	expression_index++;
-	////
 	debug_context context = {0};
-	check(e != NULL, context, "Could not allocate expression");
+	size_t        block = (size_t)expression_index / EXPRESSIONS_PER_BLOCK;
+	check(block < MAX_EXPRESSION_BLOCKS, context, "Out of expressions");
+	if (expression_blocks[block] == NULL) {
+		expression_blocks[block] = (expression *)calloc(EXPRESSIONS_PER_BLOCK, sizeof(expression));
+	}
+	check(expression_blocks[block] != NULL, context, "Could not allocate expressions");
+	expression *e = &expression_blocks[block][expression_index % EXPRESSIONS_PER_BLOCK];
+	expression_index++;
 	init_type_ref(&e->type, NO_NAME);
 	return e;
 }
@@ -4680,7 +4700,10 @@ static void copy_opcode(opcode *o) {
 
 	uint8_t *new_data = &new_code.o[new_code.size];
 
-	assert(new_code.size + o->size < OPCODES_SIZE);
+	{
+		debug_context context = {0};
+		check(new_code.size + o->size < OPCODES_SIZE, context, "Out of opcode space");
+	}
 
 	memcpy(new_data, o, o->size);
 
