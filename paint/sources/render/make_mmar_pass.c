@@ -117,7 +117,16 @@ void mmar_param_set(char *id, float value) {
 	mmar_param_set_m(mmar_importing, id, value);
 }
 
+// The link built for a bound constant carries the full store key, "<material>|<id>",
+// because it is resolved at draw time and mmar_importing by then is whichever
+// archive was read last -- not necessarily the one being drawn.
 float mmar_param_value(char *id) {
+	if (mmar_params != NULL) {
+		float *v = any_map_get(mmar_params, id);
+		if (v != NULL) {
+			return *v;
+		}
+	}
 	return mmar_param_get_m(mmar_importing, id);
 }
 
@@ -265,50 +274,6 @@ static void mmar_pass_create_quad(void) {
 	uint32_t *idx = gpu_index_buffer_lock(mmar_pass_ib);
 	idx[0] = 0; idx[1] = 1; idx[2] = 2;
 	gpu_index_buffer_unlock(mmar_pass_ib);
-}
-
-// NOTE: gpu_create_shaders_from_kong below blocks when this is called from a
-// plugin script under --background. Measured by bisection: stopping before the
-// call completes the import normally, stopping immediately after it hangs. So
-// the runtime kong compiler needs a context the headless script path does not
-// provide, and passes have to be driven from inside the render path rather than
-// at import time. See issue #13.
-// Write parameter values into a shader source as literals.
-//
-// Longest id first. `constants.seed_fbm4` is a prefix of
-// `constants.seed_fbm4_2`, and replacing the short one first leaves `_2`
-// dangling on the end of a number -- which kong reports as a missing bracket
-// three lines later. The cooker orders its own renames the same way.
-//
-// Fixed point, never an exponent: kong tells int from float by the decimal
-// point alone and has no exponent literals. UPSTREAM-QUIRKS.md.
-static char *mmar_bake_params(mmar_material_t *m, char *src, char **ids, int count) {
-	if (src == NULL || ids == NULL || count <= 0) {
-		return src;
-	}
-	bool *done = calloc(count, sizeof(bool));
-	for (int k = 0; k < count; ++k) {
-		int best = -1;
-		int best_len = -1;
-		for (int i = 0; i < count; ++i) {
-			if (done[i] || ids[i] == NULL) {
-				continue;
-			}
-			int l = string_length(ids[i]);
-			if (l > best_len) {
-				best     = i;
-				best_len = l;
-			}
-		}
-		if (best < 0) {
-			break;
-		}
-		done[best] = true;
-		src        = string_replace_all(src, string("constants.%s", ids[best]),
-		                                string("%.9f", mmar_param_get_m(m, ids[best])));
-	}
-	free(done);
-	return src;
 }
 
 // What a pass keeps between runs.
@@ -480,7 +445,7 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 		for (int bi = 0; bi < bound_count; ++bi) {
 			shader_const_t *sc = ALLOC_INIT(shader_const_t, {.name = string_copy(bound_ids[bi]),
 			                                                 .type = "float",
-			                                                 .link = string("_mmar_p_%s", bound_ids[bi])});
+			                                                 .link = string("_mmar_p_%s", mmar_param_key(mmar_rendering, bound_ids[bi]))});
 			any_array_push((any_array_t *)con->constants, sc);
 		}
 	}
@@ -940,10 +905,17 @@ char *mmar_splice_kernel(void *node, char *socket) {
 	// arrives. Every node ArmorPaint ships takes the other route: it bakes its
 	// values into the shader source and lets the material recompile, which
 	// ui_nodes already does on every knob change. So does this.
-	char *src = m->kernel_source;
+	// Bound, not baked -- #15 works now, so a value change writes a uniform and
+	// leaves the source alone. Baking put the value in the text, so every edit
+	// changed the shader and Metal recompiled a 49KB kernel to move one knob. #16.
 	if (m->kernel_params != NULL) {
-		src = mmar_bake_params(m, src, (char **)m->kernel_params->buffer, m->kernel_params->length);
+		for (i32 pi = 0; pi < m->kernel_params->length; ++pi) {
+			char *pid = m->kernel_params->buffer[pi];
+			node_shader_add_constant(parser_material_kong, string("%s: float", pid),
+			                         string("_mmar_p_%s", mmar_param_key(m, pid)));
+		}
 	}
+	char *src = m->kernel_source;
 	node_shader_add_function(parser_material_kong, src);
 	mmar_splice_ms_total += (iron_time() - t_splice) * 1000.0;
 
