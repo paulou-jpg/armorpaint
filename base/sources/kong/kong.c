@@ -5469,7 +5469,7 @@ void resolve_types_in_expression(statement *parent, expression *e) {
 			}
 			else {
 				debug_context context = {0};
-				error(context, "Type mismatch %s vs %s", get_name(get_type(left_type)->name), get_name(get_type(right_type)->name));
+				error(context, "Type mismatch %s vs %s", type_name_or_unresolved(left_type), type_name_or_unresolved(right_type));
 			}
 			break;
 		}
@@ -5481,7 +5481,7 @@ void resolve_types_in_expression(statement *parent, expression *e) {
 			type_id right_type = e->binary.right->type.type;
 			if (!types_compatible(left_type, right_type)) {
 				debug_context context = {0};
-				error(context, "Type mismatch %s vs %s", get_name(get_type(left_type)->name), get_name(get_type(right_type)->name));
+				error(context, "Type mismatch %s vs %s", type_name_or_unresolved(left_type), type_name_or_unresolved(right_type));
 			}
 			e->type = upgrade_type(e->binary.left->type, e->binary.right->type);
 			break;
@@ -5494,7 +5494,7 @@ void resolve_types_in_expression(statement *parent, expression *e) {
 			type_id right_type = e->binary.right->type.type;
 			if (!types_compatible(left_type, right_type)) {
 				debug_context context = {0};
-				error(context, "Type mismatch %s vs %s", get_name(get_type(left_type)->name), get_name(get_type(right_type)->name));
+				error(context, "Type mismatch %s vs %s", type_name_or_unresolved(left_type), type_name_or_unresolved(right_type));
 			}
 			e->type = e->binary.left->type;
 			break;
@@ -5702,6 +5702,13 @@ void resolve_types(void) {
 		}
 	}
 
+	// Signatures first, and do not go on to the bodies if one of them failed:
+	// resolving an expression against a parameter whose type is still NO_TYPE
+	// only produces more diagnostics about the consequences of the first one.
+	if (kong_error) {
+		return;
+	}
+
 	for (function_id i = 0; get_function(i) != NULL; ++i) {
 		function *f = get_function(i);
 
@@ -5725,6 +5732,11 @@ void resolve_types(void) {
 		}
 	}
 
+	// Signatures are resolved; bodies are not worth walking if they are not.
+	if (kong_error) {
+		return;
+	}
+
 	for (function_id i = 0; get_function(i) != NULL; ++i) {
 		function *f = get_function(i);
 
@@ -5741,6 +5753,13 @@ void resolve_types(void) {
 		}
 
 		resolve_types_in_block(NULL, f->block);
+
+		// One unresolved name cascades: every expression built on it reports
+		// its own failure, and the real diagnostic scrolls away. Stop at the
+		// first function that did not resolve.
+		if (kong_error) {
+			return;
+		}
 	}
 }
 
@@ -5963,6 +5982,14 @@ type_id find_type_by_ref(type_ref *t) {
 	}
 
 	return NO_TYPE;
+}
+
+// get_type returns NULL for NO_TYPE, so naming a type that failed to resolve
+// dereferences NULL -- inside the error() call reporting that very failure.
+// That is how "Variable TAU not found" became a segfault instead of a message.
+const char *type_name_or_unresolved(type_id t) {
+	type *ty = get_type(t);
+	return ty == NULL ? "<unresolved>" : get_name(ty->name);
 }
 
 type *get_type(type_id s) {

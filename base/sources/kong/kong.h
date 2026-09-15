@@ -635,6 +635,15 @@ void                  error_args(debug_context context, const char *message, va_
 void                  error_args_no_context(const char *message, va_list args);
 void                  check_function(bool test, debug_context context, const char *message, ...);
 
+// Set by error()/check() and cleared at the start of a compile. A caller that
+// does not consult it goes on to codegen with unresolved types -- which is not
+// a survivable state, only a slower crash. #5.
+extern bool kong_error;
+
+// Names a type for a diagnostic without dereferencing NULL when it is the very
+// type that failed to resolve.
+const char *type_name_or_unresolved(type_id t);
+
 #define check(test, context, message, ...) \
 	assert(test);                          \
 	check_function(test, context, message, ##__VA_ARGS__)
