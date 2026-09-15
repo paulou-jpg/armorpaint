@@ -394,6 +394,10 @@ static void mmar_pass_draw(shader_context_t *con, gpu_texture_t *target, int siz
 	for (int i = 0; i < mmar_pass_input_count; ++i) {
 		gpu_set_texture(i, mmar_pass_inputs[i]);
 	}
+	// Between _gpu_begin and gpu_draw: gpu_draw unlocks this slot of the
+	// constant ring, binds it and advances. A value written outside that
+	// window lands in a slot no draw will read.
+	uniforms_set_obj_consts(con, NULL);
 	gpu_set_vertex_buffer(mmar_pass_vb);
 	gpu_set_index_buffer(mmar_pass_ib);
 	gpu_draw();
@@ -414,12 +418,28 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
 
 	char *fmt = (format == NULL || string_length(format) == 0) ? "RGBA32" : format;
 
-	// Parameter values go into the source, not into a bound constant.
+	// Parameter values are bound constants, not text substituted into the
+	// source.
 	//
-	// Declaring them resolved a location for every parameter and the value
-	// written to it never reached the shader -- see UPSTREAM-QUIRKS.md, which
-	// is also why the kernel bakes its own.
-	char *src = mmar_bake_params(mmar_rendering, kong_source, mmar_pass_params, mmar_pass_param_count);
+	// They were baked because binding them did not work: a location resolved
+	// for every parameter and the value written to it never arrived. The
+	// locations were never the problem -- this pass resolves its three floats
+	// to offsets 0, 4 and 8, which is exactly kong's packing. The write was.
+	// gpu_set_float writes into whichever slot of the constant ring is
+	// currently locked, and gpu_draw unlocks that slot, binds it, advances the
+	// index and locks the next one. A value written outside that window goes
+	// to a slot no draw will ever read, which is indistinguishable from a
+	// parameter the author set to zero. So the write happens in
+	// mmar_pass_draw, between _gpu_begin and gpu_draw. #15.
+	char *src = kong_source;
+	int   bound_count = mmar_pass_param_count;
+	char *bound_ids[64];
+	for (int bi = 0; bi < bound_count && bi < 64; ++bi) {
+		bound_ids[bi] = mmar_pass_params[bi];
+	}
+	if (bound_count > 64) {
+		bound_count = 64;
+	}
 
 	if (mmar_pass_cache == NULL) {
 		mmar_pass_cache = any_map_create();
@@ -455,6 +475,15 @@ gpu_texture_t *mmar_run_pass(char *id, char *kong_source, char *format, int size
                                           1),
 	                                    .color_attachments = any_array_create_from_raw((void *[]){fmt}, 1)});
 	con->_ = ALLOC_INIT(shader_context_runtime_t, {0});
+	if (bound_count > 0) {
+		con->constants = (shader_const_t_array_t *)any_array_create(0);
+		for (int bi = 0; bi < bound_count; ++bi) {
+			shader_const_t *sc = ALLOC_INIT(shader_const_t, {.name = string_copy(bound_ids[bi]),
+			                                                 .type = "float",
+			                                                 .link = string("_mmar_p_%s", bound_ids[bi])});
+			any_array_push((any_array_t *)con->constants, sc);
+		}
+	}
 
 	double t_compile = iron_time();
 	gpu_create_shaders_from_kong(src, &con->vertex_shader, &con->fragment_shader, &con->_->vertex_shader_size,
