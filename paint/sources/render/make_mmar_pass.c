@@ -115,6 +115,21 @@ static char *mmar_param_key(mmar_material_t *m, char *id) {
 
 static void mmar_param_set_m(mmar_material_t *m, char *id, float value);
 
+// A moved value has to reach the buffer passes, not just the kernel.
+//
+// passes_dirty used to be set in exactly one place -- mmar_set_archive, at
+// import -- and mmar_archive_path clears it on the first render. Nothing set
+// it again, so mmar_render_passes found no dirty material and returned before
+// rendering anything. A control bound into both the kernel and a pass then
+// looked half-connected: the kernel constant moved and the passes kept their
+// import-time output, which for np_stylized_brick's rows/columns is the brick
+// pattern itself. Marking the material here is what makes a knob reach a pass.
+static void mmar_param_moved(mmar_material_t *m) {
+	if (m != NULL && m->archive != NULL) {
+		m->passes_dirty = true;
+	}
+}
+
 // Import-time entry point: the plugin seeds defaults while an archive is being
 // read, which is the one moment the material is unambiguous.
 void mmar_param_set(char *id, float value) {
@@ -145,11 +160,13 @@ static void mmar_param_set_m(mmar_material_t *m, char *id, float value) {
 		any_map_set(mmar_params, string_copy(id), v);
 		*v = value;
 		mmar_param_epoch++;
+		mmar_param_moved(m);
 		return;
 	}
 	if (*v != value) {
 		*v = value;
 		mmar_param_epoch++;
+		mmar_param_moved(m);
 	}
 }
 
